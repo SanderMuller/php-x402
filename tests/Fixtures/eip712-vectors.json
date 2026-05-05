@@ -1,0 +1,62 @@
+{
+    "$comment": "EIP-3009 transferWithAuthorization conformance vectors. Inputs match the canonical Coinbase Go test suite (go/test/unit/evm_eip712_test.go) so the digest of any vector here MUST agree byte-for-byte with the reference Go and TypeScript implementations. Test asserts structural invariants (32-byte length, determinism, input sensitivity) and a sign-recover round-trip — same shape as the official suites.",
+    "domain": {
+        "name": "USD Coin",
+        "version": "2",
+        "chainId": 8453,
+        "verifyingContract": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+    },
+    "vectors": [
+        {
+            "name": "base-mainnet-canonical",
+            "domain": {
+                "name": "USD Coin",
+                "version": "2",
+                "chainId": 8453,
+                "verifyingContract": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+            },
+            "message": {
+                "from": "0x1234567890123456789012345678901234567890",
+                "to": "0x9876543210987654321098765432109876543210",
+                "value": "1000000",
+                "validAfter": 0,
+                "validBefore": 9999999999,
+                "nonce": "0x0000000000000000000000000000000000000000000000000000000000000001"
+            }
+        },
+        {
+            "name": "base-sepolia-canonical",
+            "domain": {
+                "name": "USDC",
+                "version": "2",
+                "chainId": 84532,
+                "verifyingContract": "0x036CbD53842c5426634e7929541eC2318f3dCF7e"
+            },
+            "message": {
+                "from": "0x1234567890123456789012345678901234567890",
+                "to": "0x0000000000000000000000000000000000000000",
+                "value": "10000",
+                "validAfter": 0,
+                "validBefore": 9999999999,
+                "nonce": "0x0000000000000000000000000000000000000000000000000000000000000002"
+            }
+        },
+        {
+            "name": "polygon-canonical",
+            "domain": {
+                "name": "USD Coin (PoS)",
+                "version": "2",
+                "chainId": 137,
+                "verifyingContract": "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
+            },
+            "message": {
+                "from": "0x1111111111111111111111111111111111111111",
+                "to": "0x2222222222222222222222222222222222222222",
+                "value": "500000",
+                "validAfter": 0,
+                "validBefore": 9999999999,
+                "nonce": "0x00000000000000000000000000000000000000000000000000000000deadbeef"
+            }
+        }
+    ]
+}
