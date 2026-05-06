@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace X402\Schemes;
 
+use X402\Exceptions\InvalidPaymentException;
 use X402\Protocol\PaymentRequired;
 use X402\Protocol\PaymentSignature;
 
@@ -32,7 +33,7 @@ interface SchemeContract
      * does NOT consult chain state. The facilitator is the source of truth on
      * balance/nonce-uniqueness/etc.
      *
-     * @throws \X402\Exceptions\InvalidPaymentException
+     * @throws InvalidPaymentException
      */
     public function verifyShape(PaymentSignature $signature, PaymentRequired $challenge): void;
 }

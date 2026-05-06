@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace X402\Schemes\Evm;
 
 use Elliptic\EC;
+use InvalidArgumentException;
 use kornrunner\Keccak;
 
 /**
@@ -13,8 +14,6 @@ use kornrunner\Keccak;
  * For high-volume verification, install ext-secp256k1 (PECL) — pure PHP is
  * ~50× slower than the native binding. The package falls back to pure PHP
  * (simplito/elliptic-php) when the extension is missing.
- *
- * @internal
  */
 final class SignatureVerifier
 {
@@ -29,7 +28,7 @@ final class SignatureVerifier
         $sig = str_starts_with($signature, '0x') ? substr($signature, 2) : $signature;
 
         if (\strlen($sig) !== 130) {
-            throw new \InvalidArgumentException(sprintf('Signature must be 65 bytes hex (got %d chars).', \strlen($sig)));
+            throw new InvalidArgumentException(sprintf('Signature must be 65 bytes hex (got %d chars).', \strlen($sig)));
         }
 
         $r = substr($sig, 0, 64);
@@ -39,7 +38,7 @@ final class SignatureVerifier
         $recId = $v >= 27 ? $v - 27 : $v;
 
         if ($recId !== 0 && $recId !== 1) {
-            throw new \InvalidArgumentException(sprintf('Invalid recovery id "%d".', $recId));
+            throw new InvalidArgumentException(sprintf('Invalid recovery id "%d".', $recId));
         }
 
         $msgHex = str_starts_with($digest, '0x') ? substr($digest, 2) : $digest;
@@ -47,14 +46,17 @@ final class SignatureVerifier
         $ec = new EC('secp256k1');
         $publicKey = $ec->recoverPubKey($msgHex, ['r' => $r, 's' => $s], $recId);
 
-        /** @var string $pubHex */
         $pubHex = $publicKey->encode('hex');
+
+        if (! is_string($pubHex)) {
+            throw new InvalidArgumentException('Point::encode did not return a string.');
+        }
 
         // Drop the leading 0x04 marker, keccak256 of the 64-byte (X||Y), take last 20 bytes.
         $stripped = substr($pubHex, 2);
         $hash = Keccak::hash(hex2bin($stripped), 256);
 
-        return '0x'.substr($hash, 24);
+        return '0x' . substr($hash, 24);
     }
 
     /**

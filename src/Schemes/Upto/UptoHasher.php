@@ -1,0 +1,168 @@
+<?php
+
+declare(strict_types=1);
+
+namespace X402\Schemes\Upto;
+
+use InvalidArgumentException;
+use kornrunner\Keccak;
+use RuntimeException;
+use X402\Schemes\Evm\Constants;
+
+/**
+ * EIP-712 typed-data hashing for the `upto` scheme on EVM.
+ *
+ * Spec: `specs/schemes/upto/scheme_upto_evm.md`.
+ *
+ * Distinct from `Permit2Hasher` in two places:
+ *
+ *   1. The witness type carries an extra `facilitator` field:
+ *      `Witness(address to,uint256 validAfter,address facilitator)`.
+ *      The facilitator address binds the off-chain settlement attestation
+ *      to a specific facilitator key — without this binding, a settled
+ *      attestation could be replayed against a different facilitator's
+ *      proxy.
+ *
+ *   2. The canonical spender is `X402_UPTO_PERMIT2_PROXY`, NOT the
+ *      exact-permit2 proxy.
+ *
+ * Domain shape is the same Permit2 3-field domain (`name="Permit2"`,
+ * `chainId`, `verifyingContract = PERMIT2_CONTRACT`) — both schemes
+ * sign through the same on-chain Permit2 contract; only the proxy and
+ * the witness differ.
+ */
+final class UptoHasher
+{
+    /**
+     * @param  array{token: string, amount: string}  $permitted
+     * @param  array{spender: string, nonce: string, deadline: string}  $permit
+     * @param  array{to: string, validAfter: string, facilitator: string}  $witness
+     */
+    public function digest(int $chainId, array $permitted, array $permit, array $witness): string
+    {
+        $domainSeparator = $this->hashDomain($chainId);
+        $messageHash = $this->hashPermitWitnessTransferFrom($permitted, $permit, $witness);
+
+        return '0x' . bin2hex(Keccak::hash(
+            "\x19\x01" . hex2bin(substr($domainSeparator, 2)) . hex2bin(substr($messageHash, 2)),
+            256,
+            true,
+        ));
+    }
+
+    private function hashDomain(int $chainId): string
+    {
+        $typeHash = '0x' . Keccak::hash(
+            'EIP712Domain(string name,uint256 chainId,address verifyingContract)',
+            256,
+        );
+
+        $encoded = $this->hex2binStrict(substr($typeHash, 2))
+            . $this->hex2binStrict(substr('0x' . Keccak::hash('Permit2', 256), 2))
+            . $this->encodeUint256($chainId)
+            . $this->encodeAddress(Constants::PERMIT2_CONTRACT);
+
+        return '0x' . Keccak::hash($encoded, 256);
+    }
+
+    /**
+     * @param  array{token: string, amount: string}  $permitted
+     * @param  array{spender: string, nonce: string, deadline: string}  $permit
+     * @param  array{to: string, validAfter: string, facilitator: string}  $witness
+     */
+    private function hashPermitWitnessTransferFrom(array $permitted, array $permit, array $witness): string
+    {
+        // Type hashes concatenated alphabetically AFTER the primary type per EIP-712.
+        // Witness sorts before TokenPermissions alphabetically when not the primary —
+        // but here PermitWitnessTransferFrom is primary, then alphabetical: TokenPermissions, Witness.
+        $typeHash = '0x' . Keccak::hash(
+            'PermitWitnessTransferFrom(TokenPermissions permitted,address spender,uint256 nonce,uint256 deadline,Witness witness)TokenPermissions(address token,uint256 amount)Witness(address to,uint256 validAfter,address facilitator)',
+            256,
+        );
+
+        $encoded = $this->hex2binStrict(substr($typeHash, 2))
+            . $this->hex2binStrict(substr($this->hashTokenPermissions($permitted), 2))
+            . $this->encodeAddress($permit['spender'])
+            . $this->encodeUint256String($permit['nonce'])
+            . $this->encodeUint256String($permit['deadline'])
+            . $this->hex2binStrict(substr($this->hashWitness($witness), 2));
+
+        return '0x' . Keccak::hash($encoded, 256);
+    }
+
+    /**
+     * @param  array{token: string, amount: string}  $permitted
+     */
+    private function hashTokenPermissions(array $permitted): string
+    {
+        $typeHash = '0x' . Keccak::hash('TokenPermissions(address token,uint256 amount)', 256);
+
+        $encoded = $this->hex2binStrict(substr($typeHash, 2))
+            . $this->encodeAddress($permitted['token'])
+            . $this->encodeUint256String($permitted['amount']);
+
+        return '0x' . Keccak::hash($encoded, 256);
+    }
+
+    /**
+     * @param  array{to: string, validAfter: string, facilitator: string}  $witness
+     */
+    private function hashWitness(array $witness): string
+    {
+        $typeHash = '0x' . Keccak::hash('Witness(address to,uint256 validAfter,address facilitator)', 256);
+
+        $encoded = $this->hex2binStrict(substr($typeHash, 2))
+            . $this->encodeAddress($witness['to'])
+            . $this->encodeUint256String($witness['validAfter'])
+            . $this->encodeAddress($witness['facilitator']);
+
+        return '0x' . Keccak::hash($encoded, 256);
+    }
+
+    private function encodeAddress(string $address): string
+    {
+        $hex = strtolower(str_starts_with($address, '0x') ? substr($address, 2) : $address);
+
+        if (\strlen($hex) !== 40) {
+            throw new InvalidArgumentException(sprintf('Invalid EVM address: "%s".', $address));
+        }
+
+        return str_repeat("\x00", 12) . $this->hex2binStrict($hex);
+    }
+
+    private function encodeUint256(int $value): string
+    {
+        if ($value < 0) {
+            throw new InvalidArgumentException('uint256 values must be non-negative.');
+        }
+
+        return $this->hex2binStrict(str_pad(dechex($value), 64, '0', STR_PAD_LEFT));
+    }
+
+    private function encodeUint256String(string $value): string
+    {
+        if (! \extension_loaded('gmp')) {
+            throw new RuntimeException('ext-gmp is required for uint256 string encoding.');
+        }
+
+        $trimmed = ltrim($value, '0');
+        if ($trimmed === '') {
+            $trimmed = '0';
+        }
+
+        $hex = gmp_strval(gmp_init($trimmed, 10), 16);
+
+        return $this->hex2binStrict(str_pad($hex, 64, '0', STR_PAD_LEFT));
+    }
+
+    private function hex2binStrict(string $hex): string
+    {
+        $bin = hex2bin($hex);
+
+        if ($bin === false) {
+            throw new InvalidArgumentException(sprintf('Invalid hex input: "%s".', $hex));
+        }
+
+        return $bin;
+    }
+}

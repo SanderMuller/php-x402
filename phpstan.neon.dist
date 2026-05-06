@@ -7,9 +7,15 @@ includes:
 parameters:
     tmpDir: .cache/phpstan
 
+    stubFiles:
+        - .phpstan/stubs/elliptic-php.stub.php
+
     paths:
         - src
         - tests
+
+    excludePaths:
+        - .phpstan/stubs/*
 
     level: max
 
@@ -32,6 +38,8 @@ parameters:
 
     strictRules:
         allRules: true
+
+    editorUrl: 'phpstorm://open?file=%%file%%&line=%%line%%'
 
     treatPhpDocTypesAsCertain: false
 
@@ -60,4 +68,16 @@ parameters:
         -
             identifier: classConstant.internalClass
             path: tests/
+            reportUnmatched: false
+        # pest-plugin-arch's ArchExpectation interface is marked @internal but
+        # the fluent helpers (ignoring, etc.) are the user-facing API.
+        -
+            identifier: method.internalInterface
+            path: tests/Arch/
+            reportUnmatched: false
+        # Pest arch DSL chains return ArchExpectation; PHPStan can't always
+        # follow the fluent return type through ->not->toBeUsed().
+        -
+            identifier: property.nonObject
+            path: tests/Arch/
             reportUnmatched: false

@@ -8,8 +8,11 @@ use Nyholm\Psr7\ServerRequest;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use Psr\Http\Server\RequestHandlerInterface;
+use X402\Facilitator\DiscoveryPage;
+use X402\Facilitator\DiscoveryQuery;
 use X402\Facilitator\FacilitatorClient;
 use X402\Facilitator\SettleResult;
+use X402\Facilitator\SupportedKinds;
 use X402\Facilitator\VerifyResult;
 use X402\Protocol\PaymentRequired;
 use X402\Protocol\PaymentSignature;
@@ -19,14 +22,11 @@ use X402\Schemes\Evm\ExactScheme;
 use X402\Server\PaymentEnforcer;
 use X402\Server\StaticPriceTable;
 
-/**
- * @internal
- */
-final class StubFacilitator implements FacilitatorClient
+final readonly class StubFacilitator implements FacilitatorClient
 {
     public function __construct(
-        public readonly bool $verifyOk = true,
-        public readonly bool $settleOk = true,
+        public bool $verifyOk = true,
+        public bool $settleOk = true,
     ) {}
 
     public function verify(PaymentSignature $signature, PaymentRequired $challenge): VerifyResult
@@ -48,11 +48,18 @@ final class StubFacilitator implements FacilitatorClient
             errorReason: $this->settleOk ? null : 'settlement-failed',
         );
     }
+
+    public function supported(): SupportedKinds
+    {
+        return new SupportedKinds(kinds: []);
+    }
+
+    public function discoverResources(DiscoveryQuery $query = new DiscoveryQuery()): DiscoveryPage
+    {
+        return new DiscoveryPage(items: [], limit: $query->limit, offset: $query->offset, total: 0);
+    }
 }
 
-/**
- * @internal
- */
 final class OkHandler implements RequestHandlerInterface
 {
     public function handle(ServerRequestInterface $request): ResponseInterface
@@ -66,21 +73,21 @@ function buildEnforcer(?FacilitatorClient $facilitator = null, Version $version 
     $challenge = new PaymentRequired(
         scheme: 'exact',
         network: 'eip155:8453',
-        maxAmountRequired: '10000',
+        amount: '10000',
         asset: '0xasset',
         payTo: '0x000000000000000000000000000000000000beef',
     );
 
-    $priceTable = new StaticPriceTable;
+    $priceTable = new StaticPriceTable();
     $priceTable->set('/premium', $challenge);
 
-    $factory = new Psr17Factory;
+    $factory = new Psr17Factory();
 
     return new PaymentEnforcer(
         priceTable: $priceTable,
-        facilitator: $facilitator ?? new StubFacilitator,
-        nonceStore: new InMemoryNonceStore,
-        schemes: ['exact' => new ExactScheme],
+        facilitator: $facilitator ?? new StubFacilitator(),
+        nonceStore: new InMemoryNonceStore(),
+        schemes: ['exact' => new ExactScheme()],
         responseFactory: $factory,
         streamFactory: $factory,
         version: $version,
@@ -100,7 +107,7 @@ function buildSignedRequest(string $signatureHeader): ServerRequestInterface
                 'value' => '10000',
                 'validAfter' => time() - 10,
                 'validBefore' => time() + 60,
-                'nonce' => '0x'.bin2hex(random_bytes(32)),
+                'nonce' => '0x' . bin2hex(random_bytes(32)),
             ],
         ],
     ];
@@ -111,34 +118,36 @@ function buildSignedRequest(string $signatureHeader): ServerRequestInterface
         ->withHeader($signatureHeader, $headerValue);
 }
 
-it('returns 402 when no payment header is present', function (): void {
-    $response = buildEnforcer()->process(new ServerRequest('GET', '/premium'), new OkHandler);
+it('returns 402 when no payment header is present (v1: body-only, no header)', function (): void {
+    $response = buildEnforcer()->process(new ServerRequest('GET', '/premium'), new OkHandler());
 
     expect($response->getStatusCode())->toBe(402);
-    expect($response->hasHeader('X-PAYMENT'))->toBeTrue();
+    // v1 has no challenge header — the spec puts the challenge in the body.
+    expect($response->hasHeader('X-PAYMENT'))->toBeFalse();
+    expect((string) $response->getBody())->toContain('"x402Version":1');
 });
 
 it('passes through when the resource is not priced', function (): void {
-    $response = buildEnforcer()->process(new ServerRequest('GET', '/free'), new OkHandler);
+    $response = buildEnforcer()->process(new ServerRequest('GET', '/free'), new OkHandler());
 
     expect($response->getStatusCode())->toBe(200);
 });
 
 it('settles and returns the inner response with PAYMENT-RESPONSE on a valid payment', function (): void {
-    $response = buildEnforcer()->process(buildSignedRequest('X-PAYMENT'), new OkHandler);
+    $response = buildEnforcer()->process(buildSignedRequest('X-PAYMENT'), new OkHandler());
 
     expect($response->getStatusCode())->toBe(200);
     expect($response->getHeaderLine('X-PAYMENT-RESPONSE'))->not->toBe('');
 });
 
 it('returns 402 when facilitator verify fails', function (): void {
-    $response = buildEnforcer(new StubFacilitator(verifyOk: false))->process(buildSignedRequest('X-PAYMENT'), new OkHandler);
+    $response = buildEnforcer(new StubFacilitator(verifyOk: false))->process(buildSignedRequest('X-PAYMENT'), new OkHandler());
 
     expect($response->getStatusCode())->toBe(402);
 });
 
 it('returns 402 when facilitator settle fails', function (): void {
-    $response = buildEnforcer(new StubFacilitator(verifyOk: true, settleOk: false))->process(buildSignedRequest('X-PAYMENT'), new OkHandler);
+    $response = buildEnforcer(new StubFacilitator(verifyOk: true, settleOk: false))->process(buildSignedRequest('X-PAYMENT'), new OkHandler());
 
     expect($response->getStatusCode())->toBe(402);
 });
@@ -147,15 +156,16 @@ it('rejects nonce reuse', function (): void {
     $request = buildSignedRequest('X-PAYMENT');
     $enforcer = buildEnforcer();
 
-    $first = $enforcer->process($request, new OkHandler);
-    $second = $enforcer->process($request, new OkHandler);
+    $first = $enforcer->process($request, new OkHandler());
+    $second = $enforcer->process($request, new OkHandler());
 
     expect($first->getStatusCode())->toBe(200);
-    expect($second->getStatusCode())->toBe(402);
+    // Replay → InvalidPaymentException → 400 per spec transport status table.
+    expect($second->getStatusCode())->toBe(400);
 });
 
 it('uses v2 headers when configured for v2', function (): void {
-    $response = buildEnforcer(version: Version::V2)->process(new ServerRequest('GET', '/premium'), new OkHandler);
+    $response = buildEnforcer(version: Version::V2)->process(new ServerRequest('GET', '/premium'), new OkHandler());
 
     expect($response->getStatusCode())->toBe(402);
     expect($response->hasHeader('PAYMENT-REQUIRED'))->toBeTrue();

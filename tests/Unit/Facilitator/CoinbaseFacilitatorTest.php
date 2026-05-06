@@ -12,9 +12,6 @@ use X402\Facilitator\CoinbaseFacilitator;
 use X402\Protocol\PaymentRequired;
 use X402\Protocol\PaymentSignature;
 
-/**
- * @internal
- */
 final class FakeHttpClient implements ClientInterface
 {
     /** @var list<RequestInterface> */
@@ -30,10 +27,13 @@ final class FakeHttpClient implements ClientInterface
     }
 }
 
+/**
+ * @return array{0: CoinbaseFacilitator, 1: FakeHttpClient}
+ */
 function makeFacilitator(ResponseInterface $response): array
 {
     $client = new FakeHttpClient($response);
-    $factory = new Psr17Factory;
+    $factory = new Psr17Factory();
 
     return [new CoinbaseFacilitator($client, $factory, $factory), $client];
 }
@@ -43,7 +43,7 @@ function makeChallenge(): PaymentRequired
     return new PaymentRequired(
         scheme: 'exact',
         network: 'eip155:8453',
-        maxAmountRequired: '10000',
+        amount: '10000',
         asset: '0xabc',
         payTo: '0xdef',
     );
@@ -55,7 +55,7 @@ function makeSignature(): PaymentSignature
 }
 
 it('decodes a verify response into a VerifyResult', function (): void {
-    [$facilitator] = makeFacilitator(new Response(200, [], json_encode([
+    [$facilitator] = makeFacilitator(new Response(200, [], (string) json_encode([
         'isValid' => true,
         'payer' => '0xpayer',
     ])));
@@ -67,7 +67,7 @@ it('decodes a verify response into a VerifyResult', function (): void {
 });
 
 it('decodes a settle response into a SettleResult', function (): void {
-    [$facilitator] = makeFacilitator(new Response(200, [], json_encode([
+    [$facilitator] = makeFacilitator(new Response(200, [], (string) json_encode([
         'success' => true,
         'transaction' => '0xtxhash',
         'network' => 'eip155:8453',
@@ -94,7 +94,7 @@ it('throws on non-JSON body', function (): void {
 
 it('forwards default headers (e.g. CDP auth)', function (): void {
     $client = new FakeHttpClient(new Response(200, [], '{"isValid":true}'));
-    $factory = new Psr17Factory;
+    $factory = new Psr17Factory();
 
     $facilitator = new CoinbaseFacilitator(
         http: $client,

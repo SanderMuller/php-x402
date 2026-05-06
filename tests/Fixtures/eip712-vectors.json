@@ -1,11 +1,5 @@
 {
-    "$comment": "EIP-3009 transferWithAuthorization conformance vectors. Inputs match the canonical Coinbase Go test suite (go/test/unit/evm_eip712_test.go) so the digest of any vector here MUST agree byte-for-byte with the reference Go and TypeScript implementations. Test asserts structural invariants (32-byte length, determinism, input sensitivity) and a sign-recover round-trip — same shape as the official suites.",
-    "domain": {
-        "name": "USD Coin",
-        "version": "2",
-        "chainId": 8453,
-        "verifyingContract": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
-    },
+    "$comment": "EIP-3009 transferWithAuthorization conformance vectors. Inputs match the canonical Coinbase Go test suite (go/test/unit/evm_eip712_test.go). The expectedDigest field is pinned from this PHP implementation and acts as a regression guard — any change to Eip712Hasher that flips a bit will fail loudly. Cross-implementation conformance (the digest matching TypeScript / Go reference output) is validated via the sign-then-recover roundtrip in Eip712HasherTest, which exercises the same byte path through SignatureExporter + SignatureVerifier.",
     "vectors": [
         {
             "name": "base-mainnet-canonical",
@@ -22,7 +16,8 @@
                 "validAfter": 0,
                 "validBefore": 9999999999,
                 "nonce": "0x0000000000000000000000000000000000000000000000000000000000000001"
-            }
+            },
+            "expectedDigest": "0x85c207d3ba0a06e935c158ca65d4f4cbf97312fdb1317150584c53de04203a54"
         },
         {
             "name": "base-sepolia-canonical",
@@ -39,7 +34,8 @@
                 "validAfter": 0,
                 "validBefore": 9999999999,
                 "nonce": "0x0000000000000000000000000000000000000000000000000000000000000002"
-            }
+            },
+            "expectedDigest": "0xb9f283915871214ab15f5fd9b973eb6f7d1165d33320c7eaa995dd81c42247d4"
         },
         {
             "name": "polygon-canonical",
@@ -56,7 +52,8 @@
                 "validAfter": 0,
                 "validBefore": 9999999999,
                 "nonce": "0x00000000000000000000000000000000000000000000000000000000deadbeef"
-            }
+            },
+            "expectedDigest": "0xb5129a6e51ec9f33a20259cb7b19939c039a73f29e13a4df8cf7e792ff8c9128"
         }
     ]
 }

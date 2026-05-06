@@ -19,7 +19,7 @@ final class ArrayCache implements CacheInterface
         return $this->store[$key] ?? $default;
     }
 
-    public function set(string $key, mixed $value, int|\DateInterval|null $ttl = null): bool
+    public function set(string $key, mixed $value, int|DateInterval|null $ttl = null): bool
     {
         $this->store[$key] = $value;
 
@@ -50,9 +50,16 @@ final class ArrayCache implements CacheInterface
         return $out;
     }
 
-    public function setMultiple(iterable $values, int|\DateInterval|null $ttl = null): bool
+    /**
+     * @param  iterable<mixed, mixed>  $values
+     */
+    public function setMultiple(iterable $values, int|DateInterval|null $ttl = null): bool
     {
         foreach ($values as $k => $v) {
+            if (! is_string($k)) {
+                continue;
+            }
+
             $this->set($k, $v, $ttl);
         }
 
@@ -75,14 +82,14 @@ final class ArrayCache implements CacheInterface
 }
 
 it('claims a nonce and rejects duplicates', function (): void {
-    $store = new Psr16NonceStore(new ArrayCache);
+    $store = new Psr16NonceStore(new ArrayCache());
 
     expect($store->claim('eip155:8453', '0xabc', '0xdead', 60))->toBeTrue()
         ->and($store->claim('eip155:8453', '0xabc', '0xdead', 60))->toBeFalse();
 });
 
 it('uses the configured prefix', function (): void {
-    $cache = new ArrayCache;
+    $cache = new ArrayCache();
     $store = new Psr16NonceStore($cache, 'custom:');
 
     $store->claim('eip155:8453', '0xabc', '0xdead', 60);

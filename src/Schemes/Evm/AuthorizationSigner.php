@@ -14,10 +14,10 @@ use Random\RandomException;
  * The output is the 65-byte (r || s || v) signature suitable for the
  * `signature` field of the EVM exact-scheme payload.
  */
-final class AuthorizationSigner
+final readonly class AuthorizationSigner
 {
     public function __construct(
-        private readonly Eip712Hasher $hasher = new Eip712Hasher,
+        private Eip712Hasher $hasher = new Eip712Hasher(),
     ) {}
 
     /**
@@ -35,17 +35,10 @@ final class AuthorizationSigner
 
         $ec = new EC('secp256k1');
         $signingKey = $ec->keyFromPrivate($key, 'hex');
-        $sig = $signingKey->sign($digestHex, ['canonical' => true]);
-
-        /** @var string $r */
-        $r = str_pad($sig->r->toString(16), 64, '0', STR_PAD_LEFT);
-        /** @var string $s */
-        $s = str_pad($sig->s->toString(16), 64, '0', STR_PAD_LEFT);
-        $v = dechex($sig->recoveryParam + 27);
-        $v = str_pad($v, 2, '0', STR_PAD_LEFT);
+        $sig = $signingKey->sign($digestHex, false, ['canonical' => true]);
 
         return [
-            'signature' => '0x'.$r.$s.$v,
+            'signature' => SignatureExporter::toHex65($sig),
             'authorization' => $message,
         ];
     }
@@ -58,6 +51,6 @@ final class AuthorizationSigner
      */
     public static function randomNonce(): string
     {
-        return '0x'.bin2hex(random_bytes(32));
+        return '0x' . bin2hex(random_bytes(32));
     }
 }

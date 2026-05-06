@@ -15,16 +15,16 @@ use Psr\SimpleCache\CacheInterface;
  * under high concurrency, ship a Redis-native adapter (e.g.
  * `LaravelNonceStore` in laravel-x402 uses `Cache::add()` which IS atomic).
  */
-final class Psr16NonceStore implements NonceStoreContract
+final readonly class Psr16NonceStore implements NonceStoreContract
 {
     public function __construct(
-        private readonly CacheInterface $cache,
-        private readonly string $prefix = 'x402:nonce:',
+        private CacheInterface $cache,
+        private string $prefix = 'x402:nonce:',
     ) {}
 
     public function claim(string $network, string $from, string $nonce, int $ttlSeconds): bool
     {
-        $key = $this->prefix.sprintf('%s:%s:%s', $network, strtolower($from), strtolower($nonce));
+        $key = $this->prefix . sprintf('%s:%s:%s', $network, strtolower($from), strtolower($nonce));
 
         if ($this->cache->has($key)) {
             return false;

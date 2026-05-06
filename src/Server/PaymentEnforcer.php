@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace X402\Server;
 
+use Closure;
+use LogicException;
 use Psr\Http\Message\ResponseFactoryInterface;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
@@ -12,6 +14,7 @@ use Psr\Http\Server\MiddlewareInterface;
 use Psr\Http\Server\RequestHandlerInterface;
 use Psr\Log\LoggerInterface;
 use Psr\Log\NullLogger;
+use X402\Errors\ErrorReason;
 use X402\Exceptions\InvalidPaymentException;
 use X402\Facilitator\FacilitatorClient;
 use X402\Protocol\PaymentRequired;
@@ -20,6 +23,7 @@ use X402\Protocol\PaymentSignature;
 use X402\Protocol\Version;
 use X402\Replay\NonceStoreContract;
 use X402\Schemes\SchemeContract;
+use X402\Support\JsonReader;
 
 /**
  * PSR-15 middleware that enforces the x402 spec on inbound requests.
@@ -33,26 +37,37 @@ use X402\Schemes\SchemeContract;
  * The middleware is intentionally framework-agnostic — Laravel / Symfony
  * adapters wrap this and handle the resource → PriceTable lookup their
  * own way.
+ *
+ * **Idempotency note:** the nonce is claimed BEFORE the facilitator
+ * settles. Concurrent attack requests with the same authorization are
+ * rejected without hitting the facilitator (DoS protection). The
+ * trade-off: if the facilitator's settle fails after the claim, the
+ * nonce is burned and the user must regenerate. If the user's
+ * connection drops AFTER settle succeeds but before the response
+ * reaches them, they cannot retry the same signature — they paid but
+ * may not have received content. Hosts that need full idempotency
+ * should layer a per-(nonce, from) response cache on top of this
+ * middleware.
  */
-final class PaymentEnforcer implements MiddlewareInterface
+final readonly class PaymentEnforcer implements MiddlewareInterface
 {
-    private readonly LoggerInterface $logger;
+    private LoggerInterface $logger;
 
     /**
      * @param  array<string, SchemeContract>  $schemes  Keyed by scheme name (e.g. ["exact" => new ExactScheme]).
      */
     public function __construct(
-        private readonly PriceTable $priceTable,
-        private readonly FacilitatorClient $facilitator,
-        private readonly NonceStoreContract $nonceStore,
-        private readonly array $schemes,
-        private readonly ResponseFactoryInterface $responseFactory,
-        private readonly StreamFactoryInterface $streamFactory,
-        private readonly Version $version = Version::V1,
-        private readonly ?\Closure $resourceResolver = null,
+        private PriceTable $priceTable,
+        private FacilitatorClient $facilitator,
+        private NonceStoreContract $nonceStore,
+        private array $schemes,
+        private ResponseFactoryInterface $responseFactory,
+        private StreamFactoryInterface $streamFactory,
+        private Version $version = Version::V1,
+        private ?Closure $resourceResolver = null,
         ?LoggerInterface $logger = null,
     ) {
-        $this->logger = $logger ?? new NullLogger;
+        $this->logger = $logger ?? new NullLogger();
     }
 
     public function process(ServerRequestInterface $request, RequestHandlerInterface $handler): ResponseInterface
@@ -67,7 +82,7 @@ final class PaymentEnforcer implements MiddlewareInterface
         $headerLine = $request->getHeaderLine($this->version->signatureHeader());
 
         if ($headerLine === '') {
-            return $this->challenge($challenges, 'Payment required.');
+            return $this->challenge($challenges, 'Payment required.', fallbackResource: (string) $request->getUri());
         }
 
         try {
@@ -76,10 +91,17 @@ final class PaymentEnforcer implements MiddlewareInterface
             $scheme = $this->schemeFor($signature->scheme);
             $scheme->verifyShape($signature, $challenge);
             $this->guardReplay($signature);
-        } catch (InvalidPaymentException $e) {
-            $this->logger->warning('x402: invalid payment payload', ['reason' => $e->getMessage()]);
+        } catch (InvalidPaymentException $invalidPaymentException) {
+            $this->logger->warning('x402: invalid payment payload', ['reason' => $invalidPaymentException->getMessage()]);
 
-            return $this->challenge($challenges, $e->getMessage());
+            // Spec transport.md status table: malformed signatures → 400.
+            // 402 is reserved for "no payment yet" + "facilitator rejected".
+            return $this->challenge(
+                $challenges,
+                $invalidPaymentException->getMessage(),
+                statusCode: 400,
+                fallbackResource: (string) $request->getUri(),
+            );
         }
 
         $verify = $this->facilitator->verify($signature, $challenge);
@@ -87,7 +109,11 @@ final class PaymentEnforcer implements MiddlewareInterface
         if (! $verify->isValid) {
             $this->logger->info('x402: facilitator rejected', ['reason' => $verify->invalidReason]);
 
-            return $this->challenge($challenges, $verify->invalidReason ?? 'Payment rejected by facilitator.');
+            return $this->challenge(
+                $challenges,
+                $verify->invalidReason ?? 'Payment rejected by facilitator.',
+                fallbackResource: (string) $request->getUri(),
+            );
         }
 
         $settle = $this->facilitator->settle($signature, $challenge);
@@ -95,7 +121,11 @@ final class PaymentEnforcer implements MiddlewareInterface
         if (! $settle->success) {
             $this->logger->warning('x402: settlement failed', ['reason' => $settle->errorReason]);
 
-            return $this->challenge($challenges, $settle->errorReason ?? 'Settlement failed.');
+            return $this->challenge(
+                $challenges,
+                $settle->errorReason ?? 'Settlement failed.',
+                fallbackResource: (string) $request->getUri(),
+            );
         }
 
         $response = $handler->handle($request->withAttribute('x402.settle', $settle));
@@ -105,6 +135,9 @@ final class PaymentEnforcer implements MiddlewareInterface
             transaction: $settle->transaction,
             network: $settle->network,
             payer: $settle->payer,
+            // v2 settlement may report a different amount than authorized (upto scheme).
+            amount: $settle->amount,
+            extensions: $settle->extensions,
         );
 
         return $response->withHeader($this->version->responseHeader(), $receipt->toHeader());
@@ -113,21 +146,80 @@ final class PaymentEnforcer implements MiddlewareInterface
     /**
      * @param  list<PaymentRequired>  $challenges
      */
-    private function challenge(array $challenges, string $reason): ResponseInterface
+    private function challenge(array $challenges, string $reason, int $statusCode = 402, ?string $fallbackResource = null): ResponseInterface
     {
-        $body = [
-            'x402Version' => $this->version === Version::V2 ? '2' : '1',
-            'error' => $reason,
-            'accepts' => array_map(static fn (PaymentRequired $c) => $c->toArray(), $challenges),
-        ];
+        $body = $this->version === Version::V2
+            ? $this->buildV2Body($challenges, $reason, $fallbackResource)
+            : $this->buildV1Body($challenges, $reason);
 
         $payload = json_encode($body, JSON_THROW_ON_ERROR);
 
-        return $this->responseFactory
-            ->createResponse(402, 'Payment Required')
-            ->withHeader('Content-Type', 'application/json')
-            ->withHeader($this->version->challengeHeader(), base64_encode($payload))
-            ->withBody($this->streamFactory->createStream($payload));
+        $response = $this->responseFactory
+            ->createResponse($statusCode, $statusCode === 402 ? 'Payment Required' : 'Bad Request');
+
+        // v1 has NO challenge header — body-only. v2 hoists into PAYMENT-REQUIRED.
+        $challengeHeader = $this->version->challengeHeader();
+        if ($challengeHeader !== null) {
+            $response = $response->withHeader($challengeHeader, base64_encode($payload));
+        }
+
+        // v1 ships the challenge in the body; v2 puts it in the header
+        // and leaves the body as a server implementation concern.
+        if ($this->version === Version::V1) {
+            return $response
+                ->withHeader('Content-Type', 'application/json')
+                ->withBody($this->streamFactory->createStream($payload));
+        }
+
+        return $response;
+    }
+
+    /**
+     * @param  list<PaymentRequired>  $challenges
+     * @return array<string, mixed>
+     */
+    private function buildV1Body(array $challenges, string $reason): array
+    {
+        return [
+            'x402Version' => 1,
+            'error' => $reason,
+            'accepts' => array_map(static fn (PaymentRequired $c): array => $c->toArrayV1(), $challenges),
+        ];
+    }
+
+    /**
+     * v2 hoists `resource` to a single ResourceInfo at the top level (taken
+     * from the first challenge that supplies one). Per-entry `resource` /
+     * `description` / `mimeType` move out of `accepts[]`.
+     *
+     * @param  list<PaymentRequired>  $challenges
+     * @return array<string, mixed>
+     */
+    private function buildV2Body(array $challenges, string $reason, ?string $fallbackResource = null): array
+    {
+        $body = [
+            'x402Version' => 2,
+            'error' => $reason,
+            'accepts' => array_map(static fn (PaymentRequired $c): array => $c->toArrayV2(), $challenges),
+        ];
+
+        // Spec v2 §5.1: `resource: ResourceInfo` is REQUIRED on the challenge
+        // envelope. Use the first challenge that carries one; if none do,
+        // synthesize from the inbound request URI passed by `process()`.
+        foreach ($challenges as $candidate) {
+            $resourceInfo = $candidate->resourceInfo();
+            if ($resourceInfo !== null) {
+                $body['resource'] = $resourceInfo->toArray();
+
+                return $body;
+            }
+        }
+
+        if ($fallbackResource !== null && $fallbackResource !== '') {
+            $body['resource'] = ['url' => $fallbackResource];
+        }
+
+        return $body;
     }
 
     /**
@@ -141,17 +233,23 @@ final class PaymentEnforcer implements MiddlewareInterface
             }
         }
 
-        throw new InvalidPaymentException(sprintf(
-            'No matching challenge for scheme="%s" network="%s".',
-            $signature->scheme,
-            $signature->network,
-        ));
+        throw InvalidPaymentException::with(
+            ErrorReason::InvalidPaymentRequirements,
+            sprintf(
+                'No matching challenge for scheme="%s" network="%s".',
+                $signature->scheme,
+                $signature->network,
+            ),
+        );
     }
 
     private function schemeFor(string $name): SchemeContract
     {
         if (! isset($this->schemes[$name])) {
-            throw new InvalidPaymentException(sprintf('Unsupported scheme "%s".', $name));
+            throw InvalidPaymentException::with(
+                ErrorReason::UnsupportedScheme,
+                sprintf('Unsupported scheme "%s".', $name),
+            );
         }
 
         return $this->schemes[$name];
@@ -159,21 +257,30 @@ final class PaymentEnforcer implements MiddlewareInterface
 
     private function guardReplay(PaymentSignature $signature): void
     {
-        $auth = (array) ($signature->payload['authorization'] ?? []);
-        $from = (string) ($auth['from'] ?? '');
-        $nonce = (string) ($auth['nonce'] ?? '');
-        $validBefore = (int) ($auth['validBefore'] ?? 0);
+        $auth = JsonReader::arrayOrEmpty($signature->payload, 'authorization');
+        $from = JsonReader::stringOrNull($auth, 'from') ?? '';
+        $nonce = JsonReader::stringOrNull($auth, 'nonce') ?? '';
+        $validBefore = JsonReader::int($auth, 'validBefore', default: 0);
         $ttl = max(60, $validBefore - time() + 30);
 
         if (! $this->nonceStore->claim($signature->network, $from, $nonce, $ttl)) {
-            throw new InvalidPaymentException('Nonce already used (replay attempt).');
+            throw InvalidPaymentException::with(
+                ErrorReason::ReplayAttempt,
+                'Nonce already used (replay attempt).',
+            );
         }
     }
 
     private function resolveResource(ServerRequestInterface $request): string
     {
-        if ($this->resourceResolver !== null) {
-            return ($this->resourceResolver)($request);
+        if ($this->resourceResolver instanceof Closure) {
+            $resolved = ($this->resourceResolver)($request);
+
+            if (! is_string($resolved)) {
+                throw new LogicException('resourceResolver must return a string.');
+            }
+
+            return $resolved;
         }
 
         return $request->getUri()->getPath();

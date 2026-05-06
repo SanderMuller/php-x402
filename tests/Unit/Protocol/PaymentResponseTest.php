@@ -12,7 +12,8 @@ it('round-trips through header encoding', function (): void {
         payer: '0x000000000000000000000000000000000000beef',
     );
 
-    $decoded = json_decode(base64_decode($original->toHeader(), true) ?: '', true);
+    $bin = base64_decode($original->toHeader(), true);
+    $decoded = json_decode($bin === false ? '' : $bin, true);
 
     expect($decoded)->toBe([
         'success' => true,

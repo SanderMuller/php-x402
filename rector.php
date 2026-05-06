@@ -31,6 +31,7 @@ return RectorConfig::configure()
         instanceOf: true,
         earlyReturn: true,
         rectorPreset: true,
+        phpunitCodeQuality: true,
     )
     ->withAttributesSets()
     ->withImportNames()
