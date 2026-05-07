@@ -60,6 +60,37 @@ final readonly class StubFacilitator implements FacilitatorClient
     }
 }
 
+final class RecordingFacilitator implements FacilitatorClient
+{
+    public int $verifyCalls = 0;
+
+    public int $settleCalls = 0;
+
+    public function verify(PaymentSignature $signature, PaymentRequired $challenge): VerifyResult
+    {
+        $this->verifyCalls++;
+
+        return new VerifyResult(isValid: true, invalidReason: null, payer: '0xpayer');
+    }
+
+    public function settle(PaymentSignature $signature, PaymentRequired $challenge): SettleResult
+    {
+        $this->settleCalls++;
+
+        return new SettleResult(success: true, transaction: '0xtxhash', network: $challenge->network, payer: '0xpayer');
+    }
+
+    public function supported(): SupportedKinds
+    {
+        return new SupportedKinds(kinds: []);
+    }
+
+    public function discoverResources(DiscoveryQuery $query = new DiscoveryQuery()): DiscoveryPage
+    {
+        return new DiscoveryPage(items: [], limit: $query->limit, offset: $query->offset, total: 0);
+    }
+}
+
 final class OkHandler implements RequestHandlerInterface
 {
     public function handle(ServerRequestInterface $request): ResponseInterface
@@ -169,4 +200,91 @@ it('uses v2 headers when configured for v2', function (): void {
 
     expect($response->getStatusCode())->toBe(402);
     expect($response->hasHeader('PAYMENT-REQUIRED'))->toBeTrue();
+});
+
+it('skips the entire pipeline when shouldEnforce returns false', function (): void {
+    $challenge = new PaymentRequired(
+        scheme: 'exact',
+        network: 'eip155:8453',
+        amount: '10000',
+        asset: '0xasset',
+        payTo: '0x000000000000000000000000000000000000beef',
+    );
+
+    $priceTable = new StaticPriceTable();
+    $priceTable->set('/premium', $challenge);
+
+    $facilitator = new RecordingFacilitator();
+    $nonceStore = new InMemoryNonceStore();
+    $factory = new Psr17Factory();
+
+    $enforcer = new PaymentEnforcer(
+        priceTable: $priceTable,
+        facilitator: $facilitator,
+        nonceStore: $nonceStore,
+        schemes: ['exact' => new ExactScheme()],
+        responseFactory: $factory,
+        streamFactory: $factory,
+        shouldEnforce: static fn (ServerRequestInterface $request): bool => $request->getHeaderLine('User-Agent') !== 'human',
+    );
+
+    $response = $enforcer->process(
+        (new ServerRequest('GET', '/premium'))->withHeader('User-Agent', 'human'),
+        new OkHandler(),
+    );
+
+    expect($response->getStatusCode())->toBe(200)
+        ->and((string) $response->getBody())->toBe('protected resource')
+        ->and($response->hasHeader('X-PAYMENT-RESPONSE'))->toBeFalse()
+        ->and($facilitator->verifyCalls)->toBe(0)
+        ->and($facilitator->settleCalls)->toBe(0)
+        ->and($nonceStore->claim('eip155:8453', '0xfrom', '0xanynonce', 60))->toBeTrue();
+});
+
+it('still enforces when shouldEnforce returns true', function (): void {
+    $challenge = new PaymentRequired(
+        scheme: 'exact',
+        network: 'eip155:8453',
+        amount: '10000',
+        asset: '0xasset',
+        payTo: '0x000000000000000000000000000000000000beef',
+    );
+
+    $priceTable = new StaticPriceTable();
+    $priceTable->set('/premium', $challenge);
+
+    $factory = new Psr17Factory();
+
+    $enforcer = new PaymentEnforcer(
+        priceTable: $priceTable,
+        facilitator: new StubFacilitator(),
+        nonceStore: new InMemoryNonceStore(),
+        schemes: ['exact' => new ExactScheme()],
+        responseFactory: $factory,
+        streamFactory: $factory,
+        shouldEnforce: static fn (): bool => true,
+    );
+
+    $response = $enforcer->process(new ServerRequest('GET', '/premium'), new OkHandler());
+
+    expect($response->getStatusCode())->toBe(402);
+});
+
+it('propagates exceptions thrown by shouldEnforce', function (): void {
+    $factory = new Psr17Factory();
+
+    $enforcer = new PaymentEnforcer(
+        priceTable: new StaticPriceTable(),
+        facilitator: new StubFacilitator(),
+        nonceStore: new InMemoryNonceStore(),
+        schemes: ['exact' => new ExactScheme()],
+        responseFactory: $factory,
+        streamFactory: $factory,
+        shouldEnforce: static function (): bool {
+            throw new RuntimeException('predicate boom');
+        },
+    );
+
+    expect(fn () => $enforcer->process(new ServerRequest('GET', '/premium'), new OkHandler()))
+        ->toThrow(RuntimeException::class, 'predicate boom');
 });

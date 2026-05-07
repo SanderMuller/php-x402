@@ -29,6 +29,11 @@ use X402\Support\JsonReader;
  * PSR-15 middleware that enforces the x402 spec on inbound requests.
  *
  * Flow:
+ *   0. If a `shouldEnforce` predicate is configured and returns false,
+ *      pass through to the inner handler without resolving challenges,
+ *      claiming a nonce, or calling the facilitator. Lets adapters
+ *      compose policy (bot detection, IP allowlists, geo, plan tier)
+ *      around the protocol without wrapping the enforcer.
  *   1. Resolve PaymentRequired challenges via PriceTable. Empty list = free.
  *   2. No PAYMENT-SIGNATURE header → return 402 with PAYMENT-REQUIRED.
  *   3. Has signature → decode, verify shape, claim nonce, call facilitator
@@ -55,6 +60,10 @@ final readonly class PaymentEnforcer implements MiddlewareInterface
 
     /**
      * @param  array<string, SchemeContract>  $schemes  Keyed by scheme name (e.g. ["exact" => new ExactScheme]).
+     * @param  ?Closure(ServerRequestInterface): bool  $shouldEnforce  Optional predicate. Returns false to skip
+     *                                                                 enforcement entirely (pass through to inner
+     *                                                                 handler, no challenge / nonce / facilitator).
+     *                                                                 `null` (default) = always enforce.
      */
     public function __construct(
         private PriceTable $priceTable,
@@ -65,6 +74,7 @@ final readonly class PaymentEnforcer implements MiddlewareInterface
         private StreamFactoryInterface $streamFactory,
         private Version $version = Version::V1,
         private ?Closure $resourceResolver = null,
+        private ?Closure $shouldEnforce = null,
         ?LoggerInterface $logger = null,
     ) {
         $this->logger = $logger ?? new NullLogger();
@@ -72,6 +82,10 @@ final readonly class PaymentEnforcer implements MiddlewareInterface
 
     public function process(ServerRequestInterface $request, RequestHandlerInterface $handler): ResponseInterface
     {
+        if ($this->shouldEnforce instanceof Closure && ! ($this->shouldEnforce)($request)) {
+            return $handler->handle($request);
+        }
+
         $resource = $this->resolveResource($request);
         $challenges = $this->priceTable->challengesFor($resource);
 
