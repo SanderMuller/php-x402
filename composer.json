@@ -40,6 +40,7 @@
         "mockery/mockery": "^1.6",
         "nunomaduro/collision": "^8.0",
         "nyholm/psr7": "^1.8",
+        "orchestra/testbench": "^11.1",
         "pestphp/pest": "^3.0",
         "pestphp/pest-plugin-arch": "^3.0",
         "phpstan/extension-installer": "^1.4",
@@ -49,7 +50,7 @@
         "phpstan/phpstan-strict-rules": "^2.0",
         "rector/rector": "^2.0",
         "rector/type-perfect": "^2.1",
-        "spatie/ray": "^1.48",
+        "sandermuller/package-boost": "^0.12.0",
         "spaze/phpstan-disallowed-calls": "^4.10",
         "symplify/phpstan-extensions": "^12.0",
         "tomasvotruba/cognitive-complexity": "^1.1",
@@ -66,7 +67,10 @@
     },
     "autoload-dev": {
         "psr-4": {
-            "X402\\Tests\\": "tests/"
+            "X402\\Tests\\": "tests/",
+            "Workbench\\App\\": "workbench/app/",
+            "Workbench\\Database\\Factories\\": "workbench/database/factories/",
+            "Workbench\\Database\\Seeders\\": "workbench/database/seeders/"
         }
     },
     "scripts": {
@@ -81,7 +85,24 @@
             "@rector",
             "@format",
             "@phpstan-simplified"
-        ]
+        ],
+        "post-autoload-dump": [
+            "@clear",
+            "@prepare"
+        ],
+        "clear": "@php vendor/bin/testbench package:purge-skeleton --ansi",
+        "prepare": "@php vendor/bin/testbench package:discover --ansi",
+        "build": "@php vendor/bin/testbench workbench:build --ansi",
+        "serve": [
+            "Composer\\Config::disableProcessTimeout",
+            "@build",
+            "@php vendor/bin/testbench serve --ansi"
+        ],
+        "lint": [
+            "@php vendor/bin/pint --ansi",
+            "@php vendor/bin/phpstan analyse --verbose --ansi"
+        ],
+        "sync-ai": "vendor/bin/testbench package-boost:sync"
     },
     "config": {
         "allow-plugins": {
