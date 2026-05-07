@@ -68,14 +68,14 @@ final class RecordingFacilitator implements FacilitatorClient
 
     public function verify(PaymentSignature $signature, PaymentRequired $challenge): VerifyResult
     {
-        $this->verifyCalls++;
+        ++$this->verifyCalls;
 
         return new VerifyResult(isValid: true, invalidReason: null, payer: '0xpayer');
     }
 
     public function settle(PaymentSignature $signature, PaymentRequired $challenge): SettleResult
     {
-        $this->settleCalls++;
+        ++$this->settleCalls;
 
         return new SettleResult(success: true, transaction: '0xtxhash', network: $challenge->network, payer: '0xpayer');
     }
