@@ -1,0 +1,179 @@
+<?php
+
+declare(strict_types=1);
+
+namespace X402\Testing;
+
+use InvalidArgumentException;
+use X402\Protocol\PaymentRequired;
+
+/**
+ * Fluent builder for `PaymentRequired` test fixtures. Saves test code
+ * from spelling out the asset address, network CAIP-2, and atomic-unit
+ * amount conversions every time.
+ *
+ * ```php
+ * $challenge = PaymentRequiredBuilder::usdcOnBase(0.01, '0xPayTo')->build();
+ * ```
+ *
+ * For non-default values, chain setters:
+ * ```php
+ * PaymentRequiredBuilder::usdcOnBase(0.01, $payTo)
+ *     ->withMaxTimeoutSeconds(120)
+ *     ->withDescription('Premium API access')
+ *     ->build();
+ * ```
+ */
+final class PaymentRequiredBuilder
+{
+    /**
+     * Base mainnet USDC contract address.
+     */
+    public const string USDC_BASE_MAINNET = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
+
+    /**
+     * Base Sepolia USDC contract address.
+     */
+    public const string USDC_BASE_SEPOLIA = '0x036CbD53842c5426634e7929541eC2318f3dCF7e';
+
+    private string $scheme = 'exact';
+
+    private int $maxTimeoutSeconds = 60;
+
+    private ?string $resource = null;
+
+    private ?string $description = null;
+
+    private ?string $mimeType = null;
+
+    /**
+     * @var array<string, mixed>
+     */
+    private array $extra = [];
+
+    private function __construct(private readonly string $network, private readonly string $amount, private readonly string $asset, private readonly string $payTo) {}
+
+    /**
+     * USDC on Base mainnet (eip155:8453). Amount in USDC units (e.g. 0.01 = 1 cent).
+     */
+    public static function usdcOnBase(float|string $amount, string $payTo): self
+    {
+        return new self(
+            network: 'eip155:8453',
+            amount: self::toAtomicUnits($amount, decimals: 6),
+            asset: self::USDC_BASE_MAINNET,
+            payTo: $payTo,
+        );
+    }
+
+    /**
+     * USDC on Base Sepolia testnet (eip155:84532). Amount in USDC units.
+     */
+    public static function usdcOnBaseSepolia(float|string $amount, string $payTo): self
+    {
+        return new self(
+            network: 'eip155:84532',
+            amount: self::toAtomicUnits($amount, decimals: 6),
+            asset: self::USDC_BASE_SEPOLIA,
+            payTo: $payTo,
+        );
+    }
+
+    /**
+     * Generic builder for any network/asset/decimals combination.
+     */
+    public static function for(string $network, string $asset, float|string $amount, string $payTo, int $decimals = 6): self
+    {
+        return new self(
+            network: $network,
+            amount: self::toAtomicUnits($amount, $decimals),
+            asset: $asset,
+            payTo: $payTo,
+        );
+    }
+
+    public function withScheme(string $scheme): self
+    {
+        $this->scheme = $scheme;
+
+        return $this;
+    }
+
+    public function withMaxTimeoutSeconds(int $seconds): self
+    {
+        $this->maxTimeoutSeconds = $seconds;
+
+        return $this;
+    }
+
+    public function withResource(string $resource): self
+    {
+        $this->resource = $resource;
+
+        return $this;
+    }
+
+    public function withDescription(string $description): self
+    {
+        $this->description = $description;
+
+        return $this;
+    }
+
+    public function withMimeType(string $mimeType): self
+    {
+        $this->mimeType = $mimeType;
+
+        return $this;
+    }
+
+    /**
+     * @param  array<string, mixed>  $extra
+     */
+    public function withExtra(array $extra): self
+    {
+        $this->extra = $extra;
+
+        return $this;
+    }
+
+    public function build(): PaymentRequired
+    {
+        return new PaymentRequired(
+            scheme: $this->scheme,
+            network: $this->network,
+            amount: $this->amount,
+            asset: $this->asset,
+            payTo: $this->payTo,
+            maxTimeoutSeconds: $this->maxTimeoutSeconds,
+            resource: $this->resource,
+            description: $this->description,
+            mimeType: $this->mimeType,
+            extra: $this->extra,
+        );
+    }
+
+    /**
+     * Convert a human-readable amount (e.g. 0.01 USDC) to an atomic
+     * unit string (e.g. "10000" for 6 decimals). Accepts either a
+     * float or a numeric string; strings let callers preserve precision
+     * past float-rounding errors.
+     */
+    private static function toAtomicUnits(float|string $amount, int $decimals): string
+    {
+        $human = is_string($amount) ? $amount : sprintf('%.' . $decimals . 'F', $amount);
+
+        if (! is_numeric($human)) {
+            throw new InvalidArgumentException(sprintf('Amount must be numeric, got "%s".', $human));
+        }
+
+        // Multiply by 10^decimals using bcmath if available; fall back to
+        // sprintf for environments without bcmath. USDC is 6 decimals so
+        // we never overflow PHP_INT in practice.
+        if (function_exists('bcmul')) {
+            return bcmul($human, (string) (10 ** $decimals), 0);
+        }
+
+        return (string) (int) round((float) $human * (10 ** $decimals));
+    }
+}
