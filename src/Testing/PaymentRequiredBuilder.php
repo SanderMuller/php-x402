@@ -158,6 +158,11 @@ final class PaymentRequiredBuilder
      * unit string (e.g. "10000" for 6 decimals). Accepts either a
      * float or a numeric string; strings let callers preserve precision
      * past float-rounding errors.
+     *
+     * Uses bcmath when available; otherwise falls back to a pure-string
+     * decimal shift. The previous float+round() fallback silently
+     * overflowed and lost precision for 18-decimal ERC-20 fixtures —
+     * the new path is exact at any decimal count.
      */
     private static function toAtomicUnits(float|string $amount, int $decimals): string
     {
@@ -167,13 +172,41 @@ final class PaymentRequiredBuilder
             throw new InvalidArgumentException(sprintf('Amount must be numeric, got "%s".', $human));
         }
 
-        // Multiply by 10^decimals using bcmath if available; fall back to
-        // sprintf for environments without bcmath. USDC is 6 decimals so
-        // we never overflow PHP_INT in practice.
         if (function_exists('bcmul')) {
             return bcmul($human, (string) (10 ** $decimals), 0);
         }
 
-        return (string) (int) round((float) $human * (10 ** $decimals));
+        return self::shiftDecimalPoint($human, $decimals);
+    }
+
+    /**
+     * Pure-string decimal shift — no float math involved, exact at any
+     * decimal count. Parses the already-is_numeric'd input as
+     * `[-+]?\d*(\.\d*)?[eE][+-]?\d+?` (we exclude the exponent form by
+     * having normalized via sprintf upstream for floats), combines int
+     * + fractional parts, and pads/truncates to `$decimals` places.
+     * Truncation is strict (no rounding) so atomic conversions don't
+     * silently bump cents.
+     */
+    private static function shiftDecimalPoint(string $human, int $decimals): string
+    {
+        $negative = str_starts_with($human, '-');
+
+        if ($negative || str_starts_with($human, '+')) {
+            $human = substr($human, 1);
+        }
+
+        [$intPart, $fracPart] = str_contains($human, '.') ? explode('.', $human, 2) : [$human, ''];
+
+        if (strlen($fracPart) > $decimals) {
+            $fracPart = substr($fracPart, 0, $decimals);
+        } else {
+            $fracPart = str_pad($fracPart, $decimals, '0', STR_PAD_RIGHT);
+        }
+
+        $combined = ltrim($intPart . $fracPart, '0');
+        $result = $combined === '' ? '0' : $combined;
+
+        return $negative && $result !== '0' ? '-' . $result : $result;
     }
 }

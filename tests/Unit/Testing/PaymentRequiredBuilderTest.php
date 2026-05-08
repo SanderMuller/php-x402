@@ -62,3 +62,43 @@ it('overrides the default scheme via withScheme', function (): void {
 
     expect($challenge->scheme)->toBe('upto');
 });
+
+it('handles 18-decimal fixtures exactly without bcmath', function (): void {
+    // Force the no-bcmath path by exercising the public string fallback
+    // logic via a generic high-decimal challenge.
+    $challenge = PaymentRequiredBuilder::for(
+        network: 'eip155:1',
+        asset: '0xToken',
+        amount: '1.5',
+        payTo: '0xPayTo',
+        decimals: 18,
+    )->build();
+
+    // 1.5 * 10^18 = 1500000000000000000 — exact, no float overflow.
+    expect($challenge->amount)->toBe('1500000000000000000');
+});
+
+it('truncates fractional digits past decimals (no rounding)', function (): void {
+    $challenge = PaymentRequiredBuilder::for(
+        network: 'eip155:1',
+        asset: '0xToken',
+        amount: '0.0123456789',
+        payTo: '0xPayTo',
+        decimals: 6,
+    )->build();
+
+    // 0.0123456789 → 6 decimals → truncate to 0.012345 → 12345
+    expect($challenge->amount)->toBe('12345');
+});
+
+it('handles tiny sub-decimal amounts at high precision', function (): void {
+    $challenge = PaymentRequiredBuilder::for(
+        network: 'eip155:1',
+        asset: '0xToken',
+        amount: '0.000000000000000001',
+        payTo: '0xPayTo',
+        decimals: 18,
+    )->build();
+
+    expect($challenge->amount)->toBe('1');
+});

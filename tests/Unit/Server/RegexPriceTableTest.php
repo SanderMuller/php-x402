@@ -54,3 +54,23 @@ it('rejects a malformed PCRE pattern at registration time', function (): void {
     expect(fn () => $table->add('garbage-not-pcre', premiumChallenge()))
         ->toThrow(InvalidArgumentException::class, 'Invalid PCRE pattern');
 });
+
+it('fails closed (throws) when preg_match hits a runtime error', function (): void {
+    $table = new RegexPriceTable();
+    // Pathological PCRE — passes registration-time `preg_match($p, "")`
+    // because the empty subject doesn't trigger backtracking, but
+    // a real subject with many `a`s blows past the backtrack-limit.
+    $table->add('#^(a+)+$#', premiumChallenge());
+
+    // Tighten the backtrack limit so the test runs fast and
+    // deterministically. `(a+)+` against repeated `a` chars then a
+    // mismatch is the canonical catastrophic-backtracking pattern.
+    $previous = ini_set('pcre.backtrack_limit', '50');
+
+    try {
+        expect(fn () => $table->challengesFor(str_repeat('a', 30) . 'b'))
+            ->toThrow(RuntimeException::class);
+    } finally {
+        ini_set('pcre.backtrack_limit', $previous);
+    }
+});

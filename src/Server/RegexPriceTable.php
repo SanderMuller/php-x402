@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace X402\Server;
 
 use InvalidArgumentException;
+use RuntimeException;
 use X402\Protocol\PaymentRequired;
 
 /**
@@ -55,7 +56,23 @@ final class RegexPriceTable implements PriceTable
     public function challengesFor(string $resource): array
     {
         foreach ($this->entries as $entry) {
-            if (preg_match($entry['pattern'], $resource) === 1) {
+            $result = preg_match($entry['pattern'], $resource);
+
+            // Fail closed on PCRE runtime errors (backtrack-limit
+            // exhaustion, recursion-limit, JIT stack overflow, …).
+            // Returning `[]` would silently de-protect a paid route under
+            // attacker-controlled input — the route becomes free instead
+            // of erroring out. Throw so the host gets a 5xx and the
+            // operator sees the failure.
+            if ($result === false) {
+                throw new RuntimeException(sprintf(
+                    'PCRE runtime error matching pattern %s against resource: %s',
+                    $entry['pattern'],
+                    preg_last_error_msg(),
+                ));
+            }
+
+            if ($result === 1) {
                 return $entry['challenges'];
             }
         }

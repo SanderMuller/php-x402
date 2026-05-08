@@ -104,21 +104,25 @@ final readonly class PaymentEnforcer implements MiddlewareInterface
     }
 
     /**
-     * Default-wired constructor for the common case: in-process nonce
-     * store, the EVM `exact` scheme only, the supplied factory used as
-     * both the response factory and the stream factory.
+     * Test- and dev-only factory. Wires `InMemoryNonceStore` (process-
+     * local), the EVM `exact` scheme, and a single PSR-17 factory used
+     * for both response and stream construction.
      *
-     * Production hosts should still use the explicit constructor —
-     * `InMemoryNonceStore` is per-process only and breaks replay
-     * protection across multiple workers (see CLAUDE.md). This factory
-     * is for tests, single-worker dev servers, and CLI tools where the
-     * full ceremony is overkill.
+     * **Do NOT use in production.** `InMemoryNonceStore` is per-process
+     * only; in any multi-worker / multi-host deployment it accepts the
+     * same `(network, from, nonce)` more than once on different workers,
+     * which breaks replay protection — a paying user can be billed
+     * multiple times for the same authorization. Production hosts MUST
+     * use the explicit constructor with a Redis-backed `Psr16NonceStore`
+     * (or the Laravel adapter's atomic store).
      *
-     * @template T of ResponseFactoryInterface&StreamFactoryInterface
+     * The method is named `forTesting` (not `default`) precisely so
+     * call sites that try to ship it to production read as obviously
+     * wrong. See `examples/server.php` for the demo usage.
      *
-     * @param  T  $factory  PSR-17 implementation that fulfils both factory contracts (e.g. `nyholm/psr7`).
+     * @param  ResponseFactoryInterface&StreamFactoryInterface  $factory  PSR-17 impl that fulfils both contracts (e.g. `nyholm/psr7`).
      */
-    public static function default(
+    public static function forTesting(
         PriceTable $priceTable,
         FacilitatorClient $facilitator,
         ResponseFactoryInterface&StreamFactoryInterface $factory,

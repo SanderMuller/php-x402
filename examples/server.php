@@ -43,7 +43,10 @@ $priceTable->set(
         ->build(),
 );
 
-$enforcer = PaymentEnforcer::default(
+// `forTesting()` wires InMemoryNonceStore + ExactScheme. Demo only —
+// production hosts use the full constructor with a Redis-backed
+// Psr16NonceStore so replay protection holds across workers.
+$enforcer = PaymentEnforcer::forTesting(
     priceTable: $priceTable,
     facilitator: new StubFacilitator(),    // always-success, no network
     factory: $factory,

@@ -218,7 +218,7 @@ it('propagates exceptions thrown by shouldEnforce', function (): void {
         ->toThrow(RuntimeException::class, 'predicate boom');
 });
 
-it('builds via PaymentEnforcer::default() with sensible defaults', function (): void {
+it('builds via PaymentEnforcer::forTesting() with in-process defaults', function (): void {
     $challenge = new PaymentRequired(
         scheme: 'exact',
         network: 'eip155:8453',
@@ -229,7 +229,7 @@ it('builds via PaymentEnforcer::default() with sensible defaults', function (): 
     $priceTable = new StaticPriceTable();
     $priceTable->set('/premium', $challenge);
 
-    $enforcer = PaymentEnforcer::default(
+    $enforcer = PaymentEnforcer::forTesting(
         priceTable: $priceTable,
         facilitator: new StubFacilitator(),
         factory: new Psr17Factory(),
