@@ -5,7 +5,7 @@ Framework-agnostic PHP implementation of the [x402 payment protocol](https://www
 HTTP 402 stablecoin settlement — pay-per-request APIs without subscriptions, API keys, or fiat rails. EIP-3009 `transferWithAuthorization` on EVM chains via the Coinbase facilitator (or any compatible facilitator).
 
 > [!NOTE]
-> Pre-1.0 (`0.x`). Public surface is feature-complete for v1 of the spec — HTTP / MCP / A2A transports, `exact` + `upto` schemes on EVM, ERC-7710 shape, SVM pass-through, replay protection, Bazaar discovery. See [`ROADMAP.md`](ROADMAP.md) for what's shipped vs. deferred. **Not on Packagist yet** — the `composer require` below resolves once `v0.1.0` is tagged.
+> Pre-1.0 (`0.x`). Public surface is feature-complete for v1 of the spec — HTTP / MCP / A2A transports, `exact` + `upto` schemes on EVM, ERC-7710 shape, SVM pass-through, replay protection, Bazaar discovery. See [`ROADMAP.md`](https://github.com/SanderMuller/php-x402/blob/main/ROADMAP.md) for what's shipped vs. deferred. **Not on Packagist yet** — the `composer require` below resolves once `v0.1.0` is tagged.
 
 ## What it does
 
@@ -73,7 +73,7 @@ $client = new PayingClient(
 $response = $client->sendRequest($request);     // 402 → sign → retry → 200
 ```
 
-`PrivateKeyWallet` is fine for tests and CLI tools. **For production, implement `X402\Client\Wallet` against a KMS** (AWS, GCP, HSM) so private keys never sit in process memory. See [`docs/kms.md`](docs/kms.md) for the contract details, AWS-KMS reference impl, and the three rules every adapter must follow (low-s normalization, DER → raw conversion, recovery-id derivation).
+`PrivateKeyWallet` is fine for tests and CLI tools. **For production, implement `X402\Client\Wallet` against a KMS** (AWS, GCP, HSM) so private keys never sit in process memory. See [`docs/kms.md`](https://github.com/SanderMuller/php-x402/blob/main/docs/kms.md) for the contract details, AWS-KMS reference impl, and the three rules every adapter must follow (low-s normalization, DER → raw conversion, recovery-id derivation).
 
 ## Surface
 
@@ -124,19 +124,19 @@ Conformance vectors in `tests/Fixtures/eip712-vectors.json` mirror the upstream 
 
 ## Roadmap
 
-See [`ROADMAP.md`](ROADMAP.md) for shipped scope and explicit non-goals (Solana client-side signing, Stellar, ERC-7710 redelegation chain hashing, RFC 9421, SIWX).
+See [`ROADMAP.md`](https://github.com/SanderMuller/php-x402/blob/main/ROADMAP.md) for shipped scope and explicit non-goals (Solana client-side signing, Stellar, ERC-7710 redelegation chain hashing, RFC 9421, SIWX).
 
 ## Changelog
 
-See [`CHANGELOG.md`](CHANGELOG.md). Updated automatically from GitHub release notes.
+See [`CHANGELOG.md`](https://github.com/SanderMuller/php-x402/blob/main/CHANGELOG.md). Updated automatically from GitHub release notes.
 
 ## Contributing
 
-See [`CONTRIBUTING.md`](CONTRIBUTING.md) — boundary rules, QA bar, crypto-stub gotcha, spec-drift policy.
+See [`CONTRIBUTING.md`](https://github.com/SanderMuller/php-x402/blob/main/CONTRIBUTING.md) — boundary rules, QA bar, crypto-stub gotcha, spec-drift policy.
 
 ## Security
 
-See [`SECURITY.md`](SECURITY.md) for vulnerability reporting.
+See [`SECURITY.md`](https://github.com/SanderMuller/php-x402/blob/main/SECURITY.md) for vulnerability reporting.
 
 ## License
 
