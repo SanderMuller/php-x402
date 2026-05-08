@@ -38,6 +38,31 @@ final readonly class CoinbaseFacilitator implements FacilitatorClient
         private Version $version = Version::V1,
     ) {}
 
+    /**
+     * Convenience constructor for the common case where the same
+     * PSR-17 implementation fulfils both factory contracts (e.g.
+     * `nyholm/psr7`, `guzzle/psr7`, `slim/psr7`). Saves callers from
+     * passing the same factory instance twice.
+     *
+     * @param  array<string, string>  $defaultHeaders
+     */
+    public static function default(
+        ClientInterface $http,
+        RequestFactoryInterface&StreamFactoryInterface $factory,
+        string $baseUrl = self::DEFAULT_BASE_URL,
+        array $defaultHeaders = [],
+        Version $version = Version::V1,
+    ): self {
+        return new self(
+            http: $http,
+            requestFactory: $factory,
+            streamFactory: $factory,
+            baseUrl: $baseUrl,
+            defaultHeaders: $defaultHeaders,
+            version: $version,
+        );
+    }
+
     public function verify(PaymentSignature $signature, PaymentRequired $challenge): VerifyResult
     {
         $body = $this->call('/verify', $this->buildBody($signature, $challenge));

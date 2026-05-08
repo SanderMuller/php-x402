@@ -49,7 +49,7 @@ $priceTable->set('/premium', new PaymentRequired(
 
 $middleware = new PaymentEnforcer(
     priceTable:      $priceTable,
-    facilitator:     new CoinbaseFacilitator($psr18Client, $psr17, $psr17),
+    facilitator:     CoinbaseFacilitator::default($psr18Client, $psr17),
     nonceStore:      new Psr16NonceStore($psr16Cache),   // Redis-backed in prod
     schemes:         ['exact' => new ExactScheme()],
     responseFactory: $psr17,

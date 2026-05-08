@@ -107,3 +107,24 @@ it('forwards default headers (e.g. CDP auth)', function (): void {
 
     expect($client->sent[0]->getHeaderLine('Authorization'))->toBe('Bearer secret-token');
 });
+
+it('builds via CoinbaseFacilitator::default() with a single combined factory', function (): void {
+    $client = new FakeHttpClient(new Response(
+        200,
+        ['Content-Type' => 'application/json'],
+        json_encode(['isValid' => true, 'payer' => '0xpayer'], JSON_THROW_ON_ERROR),
+    ));
+    $factory = new Psr17Factory();
+
+    $facilitator = CoinbaseFacilitator::default(
+        http: $client,
+        factory: $factory,
+        defaultHeaders: ['Authorization' => 'Bearer secret-token'],
+    );
+
+    $result = $facilitator->verify(makeSignature(), makeChallenge());
+
+    expect($result->isValid)->toBeTrue()
+        ->and($client->sent[0]->getHeaderLine('Authorization'))->toBe('Bearer secret-token')
+        ->and((string) $client->sent[0]->getUri())->toContain('x402.org/facilitator/verify');
+});
