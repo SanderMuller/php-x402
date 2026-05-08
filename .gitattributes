@@ -6,6 +6,7 @@
 *.php diff=php
 
 # Ignore all test and documentation with "export-ignore".
+/.agents                export-ignore
 /.ai                    export-ignore
 /.cache                 export-ignore
 /.claude                export-ignore
