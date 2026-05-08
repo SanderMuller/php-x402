@@ -5,7 +5,7 @@ Framework-agnostic PHP implementation of the [x402 payment protocol](https://www
 HTTP 402 stablecoin settlement — pay-per-request APIs without subscriptions, API keys, or fiat rails. EIP-3009 `transferWithAuthorization` on EVM chains via the Coinbase facilitator (or any compatible facilitator).
 
 > [!NOTE]
-> Pre-1.0 (`0.x`). Public surface is feature-complete for v1 of the spec — HTTP / MCP / A2A transports, `exact` + `upto` schemes on EVM, ERC-7710 shape, SVM pass-through, replay protection, Bazaar discovery. See [`ROADMAP.md`](https://github.com/SanderMuller/php-x402/blob/main/ROADMAP.md) for what's shipped vs. deferred. **Not on Packagist yet** — the `composer require` below resolves once `v0.1.0` is tagged.
+> Pre-1.0 (`0.x`). Public surface is feature-complete for v1 of the spec — HTTP / MCP / A2A transports, `exact` + `upto` schemes on EVM, ERC-7710 shape, SVM pass-through, replay protection, response-cache idempotency, Bazaar discovery. See [`ROADMAP.md`](https://github.com/SanderMuller/php-x402/blob/main/ROADMAP.md) for what's shipped vs. deferred.
 
 ## What it does
 
@@ -77,14 +77,18 @@ $response = $client->sendRequest($request);     // 402 → sign → retry → 20
 
 ## Surface
 
-| Layer             | Class                                                |
-|-------------------|------------------------------------------------------|
-| Server middleware | `X402\Server\PaymentEnforcer` (PSR-15)               |
-| Client decorator  | `X402\Client\PayingClient` (PSR-18)                  |
-| Facilitator       | `X402\Facilitator\CoinbaseFacilitator`               |
-| Signing           | `X402\Schemes\Evm\AuthorizationSigner`               |
-| Verification      | `X402\Schemes\Evm\SignatureVerifier`                 |
-| Replay store      | `X402\Replay\NonceStoreContract` + `Psr16NonceStore` |
+| Layer             | Class                                                  |
+|-------------------|--------------------------------------------------------|
+| Server middleware | `X402\Server\PaymentEnforcer` (PSR-15)                 |
+| Response cache    | `X402\Server\PaymentResponseCache` (PSR-15)            |
+| Price table       | `X402\Server\StaticPriceTable`, `RegexPriceTable`      |
+| Client decorator  | `X402\Client\PayingClient` (PSR-18)                    |
+| Facilitator       | `X402\Facilitator\CoinbaseFacilitator`                 |
+| Signing           | `X402\Schemes\Evm\AuthorizationSigner`                 |
+| Verification      | `X402\Schemes\Evm\SignatureVerifier`                   |
+| Replay store      | `X402\Replay\NonceStoreContract` + `Psr16NonceStore`   |
+| Testing helpers   | `X402\Testing\PaymentRequiredBuilder`, `StubFacilitator` |
+| CLI               | `bin/x402 decode <header>`                             |
 
 ## Composing policy
 
@@ -103,6 +107,22 @@ $middleware = new PaymentEnforcer(
 
 Predicate returns `false` → inner handler runs, no challenge / no nonce claim / no facilitator hit. Default (`null`) = always enforce. Compose multiple policies downstream: `fn ($r) => $bot($r) && $geo($r) && $plan($r)`.
 
+## Response-cache idempotency
+
+`PaymentResponseCache` is a separate PSR-15 middleware that sits **before** `PaymentEnforcer` in the chain. It caches paid 2xx responses keyed by `(network, from, nonce, signature bytes)` and replays the cached body on duplicates — closes the "paid but didn't receive content" gap when a client's connection drops between facilitator settle and response delivery.
+
+```php
+use X402\Server\PaymentResponseCache;
+
+// Pipeline: PaymentResponseCache → PaymentEnforcer → handler
+$pipeline = [
+    new PaymentResponseCache($psr16Cache, $psr17, ttl: 3600),
+    $enforcer,
+];
+```
+
+Same Redis-backed PSR-16 store as the nonce store. TTL should comfortably exceed the nonce TTL so retries past nonce expiry still hit the cache.
+
 ## Replay protection
 
 > [!IMPORTANT]
@@ -117,8 +137,11 @@ Predicate returns `false` → inner handler runs, no challenge / no nonce claim 
 
 ```bash
 composer test          # vendor/bin/pest
-composer qa            # rector + pint + phpstan (max + strict + 100% type coverage)
+composer qa            # rector + pint + phpstan (auto-fix variants)
+composer ci            # all gates in --dry-run mode (suitable for CI / pre-push)
 ```
+
+For adopter integration tests, the `X402\Testing` namespace ships a fluent `PaymentRequiredBuilder` (USDC-on-Base / Base-Sepolia helpers, atomic-unit conversion without bcmath), a `StubFacilitator` that settles locally, and a `RecordingFacilitator` for assertion.
 
 Conformance vectors in `tests/Fixtures/eip712-vectors.json` mirror the upstream Coinbase Go test suite — a hash deviation here is a deviation from the spec.
 
