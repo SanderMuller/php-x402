@@ -5,7 +5,7 @@ Framework-agnostic PHP implementation of the [x402 payment protocol](https://www
 HTTP 402 stablecoin settlement — pay-per-request APIs without subscriptions, API keys, or fiat rails. EIP-3009 `transferWithAuthorization` on EVM chains via the Coinbase facilitator (or any compatible facilitator).
 
 > [!NOTE]
-> Pre-1.0 (`0.x`). Public surface is feature-complete for v1 of the spec — HTTP / MCP / A2A transports, `exact` + `upto` schemes on EVM, ERC-7710 shape, SVM pass-through, replay protection, Bazaar discovery. See [`ROADMAP.md`](ROADMAP.md) for what's shipped vs. deferred.
+> Pre-1.0 (`0.x`). Public surface is feature-complete for v1 of the spec — HTTP / MCP / A2A transports, `exact` + `upto` schemes on EVM, ERC-7710 shape, SVM pass-through, replay protection, Bazaar discovery. See [`ROADMAP.md`](ROADMAP.md) for what's shipped vs. deferred. **Not on Packagist yet** — the `composer require` below resolves once `v0.1.0` is tagged.
 
 ## What it does
 
@@ -59,19 +59,6 @@ $middleware = new PaymentEnforcer(
 
 Pipe `$middleware` through any PSR-15 dispatcher.
 
-### Conditional enforcement
-
-Pass an optional `shouldEnforce` predicate to gate the whole pipeline per request — bot-only payment, IP allowlists, geo policy, plan-tier bypass:
-
-```php
-new PaymentEnforcer(
-    // ...
-    shouldEnforce: fn (ServerRequestInterface $r): bool => $bot->isBot($r->getHeaderLine('User-Agent')),
-);
-```
-
-Predicate returns `false` → inner handler runs, no challenge / no nonce claim / no facilitator hit. Default (`null`) = always enforce.
-
 ### Client — pay automatically on 402
 
 ```php
@@ -98,6 +85,23 @@ $response = $client->sendRequest($request);     // 402 → sign → retry → 20
 | Signing           | `X402\Schemes\Evm\AuthorizationSigner`               |
 | Verification      | `X402\Schemes\Evm\SignatureVerifier`                 |
 | Replay store      | `X402\Replay\NonceStoreContract` + `Psr16NonceStore` |
+
+## Composing policy
+
+`PaymentEnforcer` accepts an optional `shouldEnforce` predicate that gates the entire pipeline per request — useful for bot-only payment, IP allowlists, geo policy, or plan-tier exemption:
+
+```php
+use Psr\Http\Message\ServerRequestInterface;
+use X402\Server\PaymentEnforcer;
+
+$middleware = new PaymentEnforcer(
+    // ... priceTable, facilitator, nonceStore, schemes, factories ...
+    shouldEnforce: fn (ServerRequestInterface $request): bool
+        => str_starts_with($request->getUri()->getPath(), '/api/paid/'),
+);
+```
+
+Predicate returns `false` → inner handler runs, no challenge / no nonce claim / no facilitator hit. Default (`null`) = always enforce. Compose multiple policies downstream: `fn ($r) => $bot($r) && $geo($r) && $plan($r)`.
 
 ## Replay protection
 
