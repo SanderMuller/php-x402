@@ -1,0 +1,35 @@
+name: lean-check
+
+on:
+  pull_request:
+    paths:
+      - '.gitattributes'
+      - 'composer.json'
+      - '.github/workflows/lean-check.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lean-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lean-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          coverage: none
+
+      - name: Install composer dependencies
+        uses: ramsey/composer-install@v4
+
+      - name: Validate dist tarball is lean
+        run: composer lean

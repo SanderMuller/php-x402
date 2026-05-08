@@ -83,6 +83,7 @@
         "rector": "vendor/bin/rector process",
         "test": "vendor/bin/pest",
         "test-coverage": "vendor/bin/pest --coverage",
+        "lean": "vendor/bin/lean-package-validator validate --validate-git-archive --keep-license --keep-readme",
         "qa": [
             "@rector",
             "@format",
