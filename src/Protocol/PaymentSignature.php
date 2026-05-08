@@ -39,6 +39,34 @@ final readonly class PaymentSignature
     ) {}
 
     /**
+     * Extract the `(from, nonce, validBefore)` triple from a signed
+     * `exact`-scheme `authorization` payload. Returns null if any
+     * required field is missing or empty.
+     *
+     * Used by `PaymentEnforcer::guardReplay` for nonce-store TTL math
+     * and by `PaymentResponseCache` for the idempotency key. Hoisted
+     * here so the two callers share one extraction path.
+     *
+     * @return array{from: string, nonce: string, validBefore: int}|null
+     */
+    public function authorization(): ?array
+    {
+        $auth = JsonReader::arrayOrEmpty($this->payload, 'authorization');
+        $from = JsonReader::stringOrNull($auth, 'from');
+        $nonce = JsonReader::stringOrNull($auth, 'nonce');
+
+        if ($from === null || $from === '' || $nonce === null || $nonce === '') {
+            return null;
+        }
+
+        return [
+            'from' => $from,
+            'nonce' => $nonce,
+            'validBefore' => JsonReader::int($auth, 'validBefore', default: 0),
+        ];
+    }
+
+    /**
      * Decode a base64-encoded JSON header value into a PaymentSignature.
      *
      * Accepts both v1 and v2 envelope shapes — the client's declared

@@ -56,13 +56,23 @@ final readonly class PaymentResponseCache implements MiddlewareInterface
         private string $prefix = 'x402:idem:',
     ) {}
 
+    /**
+     * Attribute name under which `PaymentResponseCache` stashes the
+     * parsed `PaymentSignature` on the request. `PaymentEnforcer` reads
+     * this attribute to skip a redundant `PaymentSignature::fromHeader`
+     * parse on cache misses.
+     */
+    public const string PARSED_SIGNATURE_ATTR = 'x402.parsed-signature';
+
     public function process(ServerRequestInterface $request, RequestHandlerInterface $handler): ResponseInterface
     {
-        $key = $this->keyFor($request);
+        $parsed = $this->parseAndKey($request);
 
-        if ($key === null) {
+        if ($parsed === null) {
             return $handler->handle($request);
         }
+
+        ['key' => $key, 'signature' => $signature] = $parsed;
 
         $cached = $this->cache->get($key);
 
@@ -70,7 +80,9 @@ final readonly class PaymentResponseCache implements MiddlewareInterface
             return $this->rebuild($cached);
         }
 
-        $response = $handler->handle($request);
+        // Stash the parsed signature so PaymentEnforcer (next in the
+        // chain) can reuse it instead of re-parsing the header.
+        $response = $handler->handle($request->withAttribute(self::PARSED_SIGNATURE_ATTR, $signature));
 
         if ($this->shouldCache($response)) {
             $this->cache->set($key, $this->snapshot($response), $this->ttl);
@@ -81,7 +93,10 @@ final readonly class PaymentResponseCache implements MiddlewareInterface
         return $response;
     }
 
-    private function keyFor(ServerRequestInterface $request): ?string
+    /**
+     * @return array{key: string, signature: PaymentSignature}|null
+     */
+    private function parseAndKey(ServerRequestInterface $request): ?array
     {
         $headerLine = $request->getHeaderLine($this->version->signatureHeader());
 
@@ -97,13 +112,13 @@ final readonly class PaymentResponseCache implements MiddlewareInterface
             return null;
         }
 
-        $auth = JsonReader::arrayOrEmpty($signature->payload, 'authorization');
-        $from = JsonReader::stringOrNull($auth, 'from');
-        $nonce = JsonReader::stringOrNull($auth, 'nonce');
+        $auth = $signature->authorization();
 
-        if ($from === null || $from === '' || $nonce === null || $nonce === '') {
+        if ($auth === null) {
             return null;
         }
+
+        ['from' => $from, 'nonce' => $nonce] = $auth;
 
         // Critical: the key MUST include the raw header bytes, not just
         // the (network, from, nonce) tuple. `from` and `nonce` become
@@ -112,10 +127,12 @@ final readonly class PaymentResponseCache implements MiddlewareInterface
         // hit the cache, and receive the cached protected response
         // without paying. Hashing the headerLine binds the cache entry
         // to the actual signed authorization bytes.
-        return $this->prefix . hash(
+        $key = $this->prefix . hash(
             'sha256',
             $signature->network . '|' . strtolower($from) . '|' . strtolower($nonce) . '|' . $headerLine,
         );
+
+        return ['key' => $key, 'signature' => $signature];
     }
 
     /**

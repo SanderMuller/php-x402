@@ -25,7 +25,6 @@ use X402\Replay\InMemoryNonceStore;
 use X402\Replay\NonceStoreContract;
 use X402\Schemes\Evm\ExactScheme;
 use X402\Schemes\SchemeContract;
-use X402\Support\JsonReader;
 
 /**
  * PSR-15 middleware that enforces the x402 spec on inbound requests.
@@ -60,27 +59,10 @@ final readonly class PaymentEnforcer implements MiddlewareInterface
 {
     private LoggerInterface $logger;
 
-    private ?Closure $resourceResolver;
-
-    private ?Closure $shouldEnforce;
-
     /**
      * @param  array<string, SchemeContract>  $schemes  Keyed by scheme name (e.g. ["exact" => new ExactScheme]).
-     * @param  Closure(ServerRequestInterface): string|ResourceResolver|null  $resourceResolver  Optional; default
-     *                                                                                           uses request URI
-     *                                                                                           path. Pass a
-     *                                                                                           `ResourceResolver`
-     *                                                                                           instance for
-     *                                                                                           class-based
-     *                                                                                           resolution.
-     * @param  Closure(ServerRequestInterface): bool|EnforcementPolicy|null  $shouldEnforce  Optional gate. Returns
-     *                                                                                       false → skip enforcement
-     *                                                                                       entirely (pass through to
-     *                                                                                       inner handler, no
-     *                                                                                       challenge / nonce /
-     *                                                                                       facilitator). `null`
-     *                                                                                       (default) = always
-     *                                                                                       enforce.
+     * @param  Closure(ServerRequestInterface): string|ResourceResolver|null  $resourceResolver  Optional; default uses request URI path. Closure or `ResourceResolver` instance — invoked the same way.
+     * @param  Closure(ServerRequestInterface): bool|EnforcementPolicy|null  $shouldEnforce  Optional gate. Returns false → skip enforcement (no challenge / nonce / facilitator). `null` (default) = always enforce.
      */
     public function __construct(
         private PriceTable $priceTable,
@@ -90,35 +72,22 @@ final readonly class PaymentEnforcer implements MiddlewareInterface
         private ResponseFactoryInterface $responseFactory,
         private StreamFactoryInterface $streamFactory,
         private Version $version = Version::V1,
-        Closure|ResourceResolver|null $resourceResolver = null,
-        Closure|EnforcementPolicy|null $shouldEnforce = null,
+        private Closure|ResourceResolver|null $resourceResolver = null,
+        private Closure|EnforcementPolicy|null $shouldEnforce = null,
         ?LoggerInterface $logger = null,
     ) {
-        $this->resourceResolver = $resourceResolver instanceof ResourceResolver
-            ? Closure::fromCallable($resourceResolver)
-            : $resourceResolver;
-        $this->shouldEnforce = $shouldEnforce instanceof EnforcementPolicy
-            ? Closure::fromCallable($shouldEnforce)
-            : $shouldEnforce;
         $this->logger = $logger ?? new NullLogger();
     }
 
     /**
      * Test- and dev-only factory. Wires `InMemoryNonceStore` (process-
-     * local), the EVM `exact` scheme, and a single PSR-17 factory used
-     * for both response and stream construction.
+     * local), the EVM `exact` scheme, and a single PSR-17 factory.
      *
      * **Do NOT use in production.** `InMemoryNonceStore` is per-process
-     * only; in any multi-worker / multi-host deployment it accepts the
-     * same `(network, from, nonce)` more than once on different workers,
-     * which breaks replay protection — a paying user can be billed
-     * multiple times for the same authorization. Production hosts MUST
-     * use the explicit constructor with a Redis-backed `Psr16NonceStore`
-     * (or the Laravel adapter's atomic store).
-     *
-     * The method is named `forTesting` (not `default`) precisely so
-     * call sites that try to ship it to production read as obviously
-     * wrong. See `examples/server.php` for the demo usage.
+     * only; multi-worker deployments accept the same `(network, from,
+     * nonce)` on different workers, breaking replay protection — a
+     * paying user can be billed multiple times. Production hosts use
+     * the explicit constructor with a Redis-backed `Psr16NonceStore`.
      *
      * @param  ResponseFactoryInterface&StreamFactoryInterface  $factory  PSR-17 impl that fulfils both contracts (e.g. `nyholm/psr7`).
      */
@@ -132,7 +101,7 @@ final readonly class PaymentEnforcer implements MiddlewareInterface
             priceTable: $priceTable,
             facilitator: $facilitator,
             nonceStore: new InMemoryNonceStore(),
-            schemes: ['exact' => new ExactScheme()],
+            schemes: [ExactScheme::NAME => new ExactScheme()],
             responseFactory: $factory,
             streamFactory: $factory,
             version: $version,
@@ -141,7 +110,7 @@ final readonly class PaymentEnforcer implements MiddlewareInterface
 
     public function process(ServerRequestInterface $request, RequestHandlerInterface $handler): ResponseInterface
     {
-        if ($this->shouldEnforce instanceof Closure && ! ($this->shouldEnforce)($request)) {
+        if ($this->shouldEnforce !== null && ! ($this->shouldEnforce)($request)) {
             $this->logger->debug('x402: shouldEnforce skipped pipeline');
 
             return $handler->handle($request);
@@ -163,7 +132,12 @@ final readonly class PaymentEnforcer implements MiddlewareInterface
         }
 
         try {
-            $signature = PaymentSignature::fromHeader($headerLine);
+            // Reuse the parse done by PaymentResponseCache (when present
+            // in the chain) instead of re-decoding the header. Falls
+            // back to a fresh parse so PaymentEnforcer still works
+            // standalone.
+            $cached = $request->getAttribute(PaymentResponseCache::PARSED_SIGNATURE_ATTR);
+            $signature = $cached instanceof PaymentSignature ? $cached : PaymentSignature::fromHeader($headerLine);
             $challenge = $this->matchChallenge($signature, $challenges);
             $scheme = $this->schemeFor($signature->scheme);
             $scheme->verifyShape($signature, $challenge);
@@ -345,13 +319,10 @@ final readonly class PaymentEnforcer implements MiddlewareInterface
 
     private function guardReplay(PaymentSignature $signature): void
     {
-        $auth = JsonReader::arrayOrEmpty($signature->payload, 'authorization');
-        $from = JsonReader::stringOrNull($auth, 'from') ?? '';
-        $nonce = JsonReader::stringOrNull($auth, 'nonce') ?? '';
-        $validBefore = JsonReader::int($auth, 'validBefore', default: 0);
-        $ttl = max(60, $validBefore - time() + 30);
+        $auth = $signature->authorization() ?? ['from' => '', 'nonce' => '', 'validBefore' => 0];
+        $ttl = max(60, $auth['validBefore'] - time() + 30);
 
-        if (! $this->nonceStore->claim($signature->network, $from, $nonce, $ttl)) {
+        if (! $this->nonceStore->claim($signature->network, $auth['from'], $auth['nonce'], $ttl)) {
             throw InvalidPaymentException::with(
                 ErrorReason::ReplayAttempt,
                 'Nonce already used (replay attempt).',
@@ -361,16 +332,16 @@ final readonly class PaymentEnforcer implements MiddlewareInterface
 
     private function resolveResource(ServerRequestInterface $request): string
     {
-        if ($this->resourceResolver instanceof Closure) {
-            $resolved = ($this->resourceResolver)($request);
-
-            if (! is_string($resolved)) {
-                throw new LogicException('resourceResolver must return a string.');
-            }
-
-            return $resolved;
+        if ($this->resourceResolver === null) {
+            return $request->getUri()->getPath();
         }
 
-        return $request->getUri()->getPath();
+        $resolved = ($this->resourceResolver)($request);
+
+        if (! is_string($resolved)) {
+            throw new LogicException('resourceResolver must return a string.');
+        }
+
+        return $resolved;
     }
 }

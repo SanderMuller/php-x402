@@ -61,13 +61,10 @@ TXT);
             return 2;
         }
 
-        $output->stdout(json_encode([
-            'x402Version' => $signature->x402Version,
-            'scheme' => $signature->scheme,
-            'network' => $signature->network,
-            'payload' => $signature->payload,
-            'accepted' => $signature->accepted?->toArrayV2(),
-        ], JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n");
+        $output->stdout(json_encode(
+            $signature->toArray(),
+            JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES,
+        ) . "\n");
 
         return 0;
     }

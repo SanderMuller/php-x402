@@ -6,6 +6,7 @@ namespace X402\Testing;
 
 use InvalidArgumentException;
 use X402\Protocol\PaymentRequired;
+use X402\Schemes\Evm\ExactScheme;
 
 /**
  * Fluent builder for `PaymentRequired` test fixtures. Saves test code
@@ -36,7 +37,7 @@ final class PaymentRequiredBuilder
      */
     public const string USDC_BASE_SEPOLIA = '0x036CbD53842c5426634e7929541eC2318f3dCF7e';
 
-    private string $scheme = 'exact';
+    private string $scheme = ExactScheme::NAME;
 
     private int $maxTimeoutSeconds = 60;
 
