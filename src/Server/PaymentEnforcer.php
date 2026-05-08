@@ -21,7 +21,9 @@ use X402\Protocol\PaymentRequired;
 use X402\Protocol\PaymentResponse;
 use X402\Protocol\PaymentSignature;
 use X402\Protocol\Version;
+use X402\Replay\InMemoryNonceStore;
 use X402\Replay\NonceStoreContract;
+use X402\Schemes\Evm\ExactScheme;
 use X402\Schemes\SchemeContract;
 use X402\Support\JsonReader;
 
@@ -58,12 +60,27 @@ final readonly class PaymentEnforcer implements MiddlewareInterface
 {
     private LoggerInterface $logger;
 
+    private ?Closure $resourceResolver;
+
+    private ?Closure $shouldEnforce;
+
     /**
      * @param  array<string, SchemeContract>  $schemes  Keyed by scheme name (e.g. ["exact" => new ExactScheme]).
-     * @param  ?Closure(ServerRequestInterface): bool  $shouldEnforce  Optional predicate. Returns false to skip
-     *                                                                 enforcement entirely (pass through to inner
-     *                                                                 handler, no challenge / nonce / facilitator).
-     *                                                                 `null` (default) = always enforce.
+     * @param  Closure(ServerRequestInterface): string|ResourceResolver|null  $resourceResolver  Optional; default
+     *                                                                                           uses request URI
+     *                                                                                           path. Pass a
+     *                                                                                           `ResourceResolver`
+     *                                                                                           instance for
+     *                                                                                           class-based
+     *                                                                                           resolution.
+     * @param  Closure(ServerRequestInterface): bool|EnforcementPolicy|null  $shouldEnforce  Optional gate. Returns
+     *                                                                                       false → skip enforcement
+     *                                                                                       entirely (pass through to
+     *                                                                                       inner handler, no
+     *                                                                                       challenge / nonce /
+     *                                                                                       facilitator). `null`
+     *                                                                                       (default) = always
+     *                                                                                       enforce.
      */
     public function __construct(
         private PriceTable $priceTable,
@@ -73,16 +90,56 @@ final readonly class PaymentEnforcer implements MiddlewareInterface
         private ResponseFactoryInterface $responseFactory,
         private StreamFactoryInterface $streamFactory,
         private Version $version = Version::V1,
-        private ?Closure $resourceResolver = null,
-        private ?Closure $shouldEnforce = null,
+        Closure|ResourceResolver|null $resourceResolver = null,
+        Closure|EnforcementPolicy|null $shouldEnforce = null,
         ?LoggerInterface $logger = null,
     ) {
+        $this->resourceResolver = $resourceResolver instanceof ResourceResolver
+            ? Closure::fromCallable($resourceResolver)
+            : $resourceResolver;
+        $this->shouldEnforce = $shouldEnforce instanceof EnforcementPolicy
+            ? Closure::fromCallable($shouldEnforce)
+            : $shouldEnforce;
         $this->logger = $logger ?? new NullLogger();
+    }
+
+    /**
+     * Default-wired constructor for the common case: in-process nonce
+     * store, the EVM `exact` scheme only, the supplied factory used as
+     * both the response factory and the stream factory.
+     *
+     * Production hosts should still use the explicit constructor —
+     * `InMemoryNonceStore` is per-process only and breaks replay
+     * protection across multiple workers (see CLAUDE.md). This factory
+     * is for tests, single-worker dev servers, and CLI tools where the
+     * full ceremony is overkill.
+     *
+     * @template T of ResponseFactoryInterface&StreamFactoryInterface
+     *
+     * @param  T  $factory  PSR-17 implementation that fulfils both factory contracts (e.g. `nyholm/psr7`).
+     */
+    public static function default(
+        PriceTable $priceTable,
+        FacilitatorClient $facilitator,
+        ResponseFactoryInterface&StreamFactoryInterface $factory,
+        Version $version = Version::V1,
+    ): self {
+        return new self(
+            priceTable: $priceTable,
+            facilitator: $facilitator,
+            nonceStore: new InMemoryNonceStore(),
+            schemes: ['exact' => new ExactScheme()],
+            responseFactory: $factory,
+            streamFactory: $factory,
+            version: $version,
+        );
     }
 
     public function process(ServerRequestInterface $request, RequestHandlerInterface $handler): ResponseInterface
     {
         if ($this->shouldEnforce instanceof Closure && ! ($this->shouldEnforce)($request)) {
+            $this->logger->debug('x402: shouldEnforce skipped pipeline');
+
             return $handler->handle($request);
         }
 
@@ -96,6 +153,8 @@ final readonly class PaymentEnforcer implements MiddlewareInterface
         $headerLine = $request->getHeaderLine($this->version->signatureHeader());
 
         if ($headerLine === '') {
+            $this->logger->debug('x402: challenge issued', ['resource' => $resource, 'count' => \count($challenges)]);
+
             return $this->challenge($challenges, 'Payment required.', fallbackResource: (string) $request->getUri());
         }
 
@@ -117,6 +176,11 @@ final readonly class PaymentEnforcer implements MiddlewareInterface
                 fallbackResource: (string) $request->getUri(),
             );
         }
+
+        $this->logger->debug('x402: signature decoded', [
+            'scheme' => $signature->scheme,
+            'network' => $signature->network,
+        ]);
 
         $verify = $this->facilitator->verify($signature, $challenge);
 
@@ -141,6 +205,12 @@ final readonly class PaymentEnforcer implements MiddlewareInterface
                 fallbackResource: (string) $request->getUri(),
             );
         }
+
+        $this->logger->debug('x402: payment settled', [
+            'network' => $settle->network,
+            'payer' => $settle->payer,
+            'tx' => $settle->transaction,
+        ]);
 
         $response = $handler->handle($request->withAttribute('x402.settle', $settle));
 

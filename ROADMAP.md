@@ -6,26 +6,26 @@ gaps in commit messages.
 
 ---
 
-## Shipped (v1)
+## Shipped (v0.1)
 
-| Area | Status |
-|---|---|
-| HTTP transport (v1 + v2 negotiation) | ✅ |
-| MCP transport (`_meta["x402/payment"]`) | ✅ |
-| A2A transport metadata helpers | ✅ |
-| `exact` scheme on EVM (EIP-3009) | ✅ |
-| `exact` scheme + Permit2 transfer method (EVM) | ✅ |
-| `upto` scheme on EVM (Permit2 + facilitator-bound witness) | ✅ |
-| `exact` scheme + ERC-7710 transfer method (delegation chains, shape-only) | ✅ |
-| `exact` scheme on Solana (pass-through with shape validation) | ✅ |
-| ERC-6492 wrapped-signature decoder + signer wrapper | ✅ |
-| ERC-1271 magic-value awareness (verification delegated to facilitator) | ✅ |
-| Bazaar `/discovery/resources` client + DTO | ✅ |
-| `payment-identifier` extension | ✅ |
-| Replay protection (in-memory + interface for distributed stores) | ✅ |
-| PSR-15 server middleware + PSR-18 client decorator | ✅ |
-| `shouldEnforce` predicate — composable enforcement-policy hook on `PaymentEnforcer` | ✅ |
-| Coinbase facilitator + self-hosted (`x402-rs`) compatibility | ✅ |
+| Area                                                                                | Status |
+|-------------------------------------------------------------------------------------|--------|
+| HTTP transport (v1 + v2 negotiation)                                                | ✅      |
+| MCP transport (`_meta["x402/payment"]`)                                             | ✅      |
+| A2A transport metadata helpers                                                      | ✅      |
+| `exact` scheme on EVM (EIP-3009)                                                    | ✅      |
+| `exact` scheme + Permit2 transfer method (EVM)                                      | ✅      |
+| `upto` scheme on EVM (Permit2 + facilitator-bound witness)                          | ✅      |
+| `exact` scheme + ERC-7710 transfer method (delegation chains, shape-only)           | ✅      |
+| `exact` scheme on Solana (pass-through with shape validation)                       | ✅      |
+| ERC-6492 wrapped-signature decoder + signer wrapper                                 | ✅      |
+| ERC-1271 magic-value awareness (verification delegated to facilitator)              | ✅      |
+| Bazaar `/discovery/resources` client + DTO                                          | ✅      |
+| `payment-identifier` extension                                                      | ✅      |
+| Replay protection (in-memory + interface for distributed stores)                    | ✅      |
+| PSR-15 server middleware + PSR-18 client decorator                                  | ✅      |
+| `shouldEnforce` predicate — composable enforcement-policy hook on `PaymentEnforcer` | ✅      |
+| Coinbase facilitator + self-hosted (`x402-rs`) compatibility                        | ✅      |
 
 ---
 
@@ -58,14 +58,6 @@ trigger that would make us reconsider, plus the rough scope.
 - **Why deferred**: Stellar uses ed25519 + its own `sep-10` auth
   shape. Smaller community of PHP+Stellar users than EVM/SVM.
 - **Re-trigger**: Same pattern as SVM — wait for first ask.
-
-### `upto` scheme — *(now shipped, see above)*
-
-Originally deferred; full impl landed in this round.
-`UptoEvmScheme`, `UptoHasher`, `UptoSigner`, `UptoAuthorization`
-ship with the Permit2-based EIP-712 typed data and the canonical
-`X402_UPTO_PERMIT2_PROXY` spender. `SettleResult.amount` carries
-the actual settled cost back from the facilitator.
 
 ### ERC-7710 delegation — client-side signing
 

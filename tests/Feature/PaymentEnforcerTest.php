@@ -19,7 +19,9 @@ use X402\Protocol\PaymentSignature;
 use X402\Protocol\Version;
 use X402\Replay\InMemoryNonceStore;
 use X402\Schemes\Evm\ExactScheme;
+use X402\Server\EnforcementPolicy;
 use X402\Server\PaymentEnforcer;
+use X402\Server\ResourceResolver;
 use X402\Server\StaticPriceTable;
 
 final readonly class StubFacilitator implements FacilitatorClient
@@ -287,4 +289,72 @@ it('propagates exceptions thrown by shouldEnforce', function (): void {
 
     expect(fn () => $enforcer->process(new ServerRequest('GET', '/premium'), new OkHandler()))
         ->toThrow(RuntimeException::class, 'predicate boom');
+});
+
+it('builds via PaymentEnforcer::default() with sensible defaults', function (): void {
+    $challenge = new PaymentRequired(
+        scheme: 'exact',
+        network: 'eip155:8453',
+        amount: '10000',
+        asset: '0xasset',
+        payTo: '0x000000000000000000000000000000000000beef',
+    );
+    $priceTable = new StaticPriceTable();
+    $priceTable->set('/premium', $challenge);
+
+    $enforcer = PaymentEnforcer::default(
+        priceTable: $priceTable,
+        facilitator: new StubFacilitator(),
+        factory: new Psr17Factory(),
+    );
+
+    $response = $enforcer->process(new ServerRequest('GET', '/premium'), new OkHandler());
+
+    expect($response->getStatusCode())->toBe(402);
+});
+
+it('accepts a ResourceResolver instance and an EnforcementPolicy instance', function (): void {
+    $resolver = new class implements ResourceResolver {
+        public function __invoke(ServerRequestInterface $request): string
+        {
+            return '/static-resource';
+        }
+    };
+
+    $policy = new class implements EnforcementPolicy {
+        public function __invoke(ServerRequestInterface $request): bool
+        {
+            return $request->getHeaderLine('X-Bot') === '1';
+        }
+    };
+
+    $challenge = new PaymentRequired(
+        scheme: 'exact',
+        network: 'eip155:8453',
+        amount: '10000',
+        asset: '0xasset',
+        payTo: '0x000000000000000000000000000000000000beef',
+    );
+    $priceTable = new StaticPriceTable();
+    $priceTable->set('/static-resource', $challenge);
+
+    $factory = new Psr17Factory();
+    $enforcer = new PaymentEnforcer(
+        priceTable: $priceTable,
+        facilitator: new StubFacilitator(),
+        nonceStore: new InMemoryNonceStore(),
+        schemes: ['exact' => new ExactScheme()],
+        responseFactory: $factory,
+        streamFactory: $factory,
+        resourceResolver: $resolver,
+        shouldEnforce: $policy,
+    );
+
+    // Bot → enforcement runs → 402 (resolver routes any path to /static-resource)
+    $bot = (new ServerRequest('GET', '/anywhere'))->withHeader('X-Bot', '1');
+    expect($enforcer->process($bot, new OkHandler())->getStatusCode())->toBe(402);
+
+    // Human → policy returns false → inner handler runs → 200
+    $human = new ServerRequest('GET', '/anywhere');
+    expect($enforcer->process($human, new OkHandler())->getStatusCode())->toBe(200);
 });
