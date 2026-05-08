@@ -30,12 +30,12 @@ final class PaymentRequiredBuilder
     /**
      * Base mainnet USDC contract address.
      */
-    public const string USDC_BASE_MAINNET = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
+    public const USDC_BASE_MAINNET = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
 
     /**
      * Base Sepolia USDC contract address.
      */
-    public const string USDC_BASE_SEPOLIA = '0x036CbD53842c5426634e7929541eC2318f3dCF7e';
+    public const USDC_BASE_SEPOLIA = '0x036CbD53842c5426634e7929541eC2318f3dCF7e';
 
     private string $scheme = ExactScheme::NAME;
 

@@ -62,7 +62,7 @@ final readonly class PaymentResponseCache implements MiddlewareInterface
      * this attribute to skip a redundant `PaymentSignature::fromHeader`
      * parse on cache misses.
      */
-    public const string PARSED_SIGNATURE_ATTR = 'x402.parsed-signature';
+    public const PARSED_SIGNATURE_ATTR = 'x402.parsed-signature';
 
     public function process(ServerRequestInterface $request, RequestHandlerInterface $handler): ResponseInterface
     {

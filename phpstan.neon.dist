@@ -7,6 +7,13 @@ includes:
 parameters:
     tmpDir: .cache/phpstan
 
+    # Floor at the lowest supported PHP (composer.json `require.php: ^8.2`).
+    # Catches 8.3-only syntax (typed class constants, etc.) at static-analysis
+    # time so it doesn't slip past local pest into the CI matrix.
+    phpVersion:
+        min: 80200
+        max: 80499
+
     stubFiles:
         - .phpstan/stubs/elliptic-php.stub.php
 
