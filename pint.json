@@ -55,6 +55,7 @@
         ".cache",
         ".github",
         ".phpstan",
-        "vendor"
+        "vendor",
+        "workbench"
     ]
 }
