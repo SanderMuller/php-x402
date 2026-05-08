@@ -36,11 +36,12 @@
     "require-dev": {
         "dg/bypass-finals": "^1.9",
         "guzzlehttp/guzzle": "^7.9",
+        "guzzlehttp/promises": "^2.0.3",
         "laravel/pint": "^1.29",
         "mockery/mockery": "^1.6",
         "nunomaduro/collision": "^8.0",
         "nyholm/psr7": "^1.8",
-        "orchestra/testbench": "^11.1",
+        "orchestra/testbench": "^10.0 || ^11.1",
         "pestphp/pest": "^3.0",
         "pestphp/pest-plugin-arch": "^3.0",
         "phpstan/extension-installer": "^1.4",
