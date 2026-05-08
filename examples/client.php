@@ -16,7 +16,7 @@ declare(strict_types=1);
  * against a real payer. Production clients use a KMS-backed wallet;
  * see docs/kms.md.
  */
-require __DIR__.'/../vendor/autoload.php';
+require __DIR__ . '/../vendor/autoload.php';
 
 use GuzzleHttp\Client as GuzzleClient;
 use Nyholm\Psr7\Factory\Psr17Factory;
@@ -42,7 +42,7 @@ $request = $factory->createRequest('GET', SERVER_URL);
 
 try {
     $response = $client->sendRequest($request);
-} catch (\Throwable $e) {
+} catch (Throwable $e) {
     fwrite(STDERR, "request failed: {$e->getMessage()}\n");
     exit(1);
 }
@@ -55,4 +55,4 @@ if ($receipt !== '') {
     echo "Receipt:  {$decoded}\n";
 }
 
-echo "Body:     ".$response->getBody()."\n";
+echo 'Body:     ' . $response->getBody() . "\n";

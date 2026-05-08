@@ -17,7 +17,7 @@ declare(strict_types=1);
  * loop completes → 200 with PAYMENT-RESPONSE) without spending real
  * funds or hitting a live facilitator.
  */
-require __DIR__.'/../vendor/autoload.php';
+require __DIR__ . '/../vendor/autoload.php';
 
 use Nyholm\Psr7\Factory\Psr17Factory;
 use Nyholm\Psr7\Response;
@@ -53,7 +53,7 @@ $enforcer = PaymentEnforcer::default(
 // Inner handler — what the user sees AFTER paying.
 // ---------------------------------------------------------------------
 
-$inner = new class () implements RequestHandlerInterface {
+$inner = new class implements RequestHandlerInterface {
     public function handle(ServerRequestInterface $request): ResponseInterface
     {
         return new Response(
