@@ -1,0 +1,53 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+// Locate the autoloader whether we're in the package itself, in a
+// downstream `vendor/sandermuller/php-x402/bin/x402`, or symlinked.
+$candidates = [
+    __DIR__.'/../vendor/autoload.php',           // package's own dev install
+    __DIR__.'/../../../autoload.php',            // installed under vendor/
+    __DIR__.'/../../autoload.php',               // some symlink edge cases
+];
+
+foreach ($candidates as $candidate) {
+    if (file_exists($candidate)) {
+        require $candidate;
+        break;
+    }
+}
+
+if (! class_exists(X402\Cli\DecodeCommand::class)) {
+    fwrite(STDERR, "error: could not locate composer autoloader\n");
+    exit(1);
+}
+
+$argv = $_SERVER['argv'] ?? [];
+array_shift($argv);                              // drop the script name
+$subcommand = array_shift($argv) ?? '';
+
+$output = X402\Cli\Output::default();
+
+exit(match ($subcommand) {
+    'decode' => X402\Cli\DecodeCommand::run($argv, $output),
+    '', '-h', '--help' => (function () use ($output): int {
+        $output->stdout(<<<'TXT'
+x402 — protocol debugging CLI for sandermuller/php-x402
+
+Commands:
+  decode <header>    Decode a base64 PAYMENT-SIGNATURE / X-PAYMENT header.
+  --help, -h         Show this help.
+
+Run a command with --help for detailed usage.
+
+TXT);
+
+        return 0;
+    })(),
+    default => (function () use ($output, $subcommand): int {
+        $output->stderr(sprintf("error: unknown command \"%s\". Run \"x402 --help\" for usage.\n", $subcommand));
+
+        return 1;
+    })(),
+});

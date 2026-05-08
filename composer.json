@@ -67,6 +67,9 @@
             "X402\\": "src/"
         }
     },
+    "bin": [
+        "bin/x402"
+    ],
     "autoload-dev": {
         "psr-4": {
             "X402\\Tests\\": "tests/",
