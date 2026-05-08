@@ -66,7 +66,7 @@ final readonly class PaymentResponseCache implements MiddlewareInterface
 
         $cached = $this->cache->get($key);
 
-        if (is_array($cached)) {
+        if (is_array($cached) && $this->isValidSnapshot($cached)) {
             return $this->rebuild($cached);
         }
 
@@ -105,13 +105,33 @@ final readonly class PaymentResponseCache implements MiddlewareInterface
             return null;
         }
 
-        // Hash the tuple so cache backends with key-length / charset
-        // limits (memcached's 250-byte key cap, etc.) don't choke. Also
-        // avoids storing raw addresses as cache keys.
+        // Critical: the key MUST include the raw header bytes, not just
+        // the (network, from, nonce) tuple. `from` and `nonce` become
+        // public on-chain after settlement; an attacker who observes a
+        // paid request could otherwise forge ANY header with that tuple,
+        // hit the cache, and receive the cached protected response
+        // without paying. Hashing the headerLine binds the cache entry
+        // to the actual signed authorization bytes.
         return $this->prefix . hash(
             'sha256',
-            $signature->network . '|' . strtolower($from) . '|' . strtolower($nonce),
+            $signature->network . '|' . strtolower($from) . '|' . strtolower($nonce) . '|' . $headerLine,
         );
+    }
+
+    /**
+     * Verify the cached payload at least carries the keys we'll use to
+     * rebuild a response. A poisoned / partially-corrupted cache entry
+     * falls through to the handler instead of replaying garbage.
+     *
+     * @param  array<array-key, mixed>  $cached
+     */
+    private function isValidSnapshot(array $cached): bool
+    {
+        return isset($cached['status'], $cached['body'])
+            && is_int($cached['status'])
+            && $cached['status'] >= 100
+            && $cached['status'] < 600
+            && is_string($cached['body']);
     }
 
     private function shouldCache(ResponseInterface $response): bool

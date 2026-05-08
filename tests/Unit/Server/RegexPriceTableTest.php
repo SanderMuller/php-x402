@@ -47,3 +47,10 @@ it('supports multiple challenges per pattern', function (): void {
 
     expect($table->challengesFor('/premium'))->toHaveCount(2);
 });
+
+it('rejects a malformed PCRE pattern at registration time', function (): void {
+    $table = new RegexPriceTable();
+
+    expect(fn () => $table->add('garbage-not-pcre', premiumChallenge()))
+        ->toThrow(InvalidArgumentException::class, 'Invalid PCRE pattern');
+});

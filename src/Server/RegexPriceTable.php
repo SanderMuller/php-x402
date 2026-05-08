@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace X402\Server;
 
+use InvalidArgumentException;
 use X402\Protocol\PaymentRequired;
 
 /**
@@ -28,6 +29,23 @@ final class RegexPriceTable implements PriceTable
 
     public function add(string $pattern, PaymentRequired ...$challenges): void
     {
+        // Validate eagerly so a malformed PCRE fails at registration time
+        // (loud, easy to debug) rather than silently never matching at
+        // runtime. preg_match returns false on a malformed pattern; the
+        // error_handler swap suppresses the PHP warning so it doesn't
+        // leak to stderr in callers' test runs.
+        set_error_handler(static fn (): bool => true);
+
+        try {
+            $valid = preg_match($pattern, '') !== false;
+        } finally {
+            restore_error_handler();
+        }
+
+        if (! $valid) {
+            throw new InvalidArgumentException(sprintf('Invalid PCRE pattern: %s', $pattern));
+        }
+
         $this->entries[] = [
             'pattern' => $pattern,
             'challenges' => array_values($challenges),

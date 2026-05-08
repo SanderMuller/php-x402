@@ -196,3 +196,76 @@ it('skips on a malformed payment header — lets PaymentEnforcer issue the 400',
     expect($handler->calls)->toBe(1)
         ->and($cache->store)->toBe([]);
 });
+
+it('does not replay when the signature differs but tuple is identical (forge guard)', function (): void {
+    $cache = new IdempotencyArrayCache();
+    $factory = new Psr17Factory();
+    $middleware = new PaymentResponseCache(cache: $cache, responseFactory: $factory, streamFactory: $factory);
+
+    $paid = new PsrResponse(
+        200,
+        [Version::V1->responseHeader() => 'eyJ4IjoxfQ=='],
+        'protected',
+    );
+    $handler = new CountingHandler($paid);
+
+    // Legit request paid + cached.
+    $legit = (new PaymentSignature(
+        scheme: 'exact',
+        network: 'eip155:8453',
+        payload: [
+            'authorization' => ['from' => '0xfrom', 'nonce' => '0xnonce'],
+            'signature' => '0xLEGIT-SIG',
+        ],
+    ))->toHeader();
+
+    $middleware->process(
+        (new ServerRequest('GET', '/premium'))->withHeader(Version::V1->signatureHeader(), $legit),
+        $handler,
+    );
+
+    // Attacker constructs a header with the SAME from + nonce but a
+    // forged signature. Different bytes → different cache key → miss →
+    // inner handler runs again (in production: PaymentEnforcer rejects
+    // because the nonce store has already claimed it).
+    $forged = (new PaymentSignature(
+        scheme: 'exact',
+        network: 'eip155:8453',
+        payload: [
+            'authorization' => ['from' => '0xfrom', 'nonce' => '0xnonce'],
+            'signature' => '0xATTACKER-FORGED',
+        ],
+    ))->toHeader();
+
+    $middleware->process(
+        (new ServerRequest('GET', '/premium'))->withHeader(Version::V1->signatureHeader(), $forged),
+        $handler,
+    );
+
+    expect($handler->calls)->toBe(2)                                            // forged path NOT served from cache
+        ->and($cache->store)->toHaveCount(2);                                   // distinct cache entries
+});
+
+it('falls through to handler when the cached snapshot is malformed', function (): void {
+    $cache = new IdempotencyArrayCache();
+    $factory = new Psr17Factory();
+    $middleware = new PaymentResponseCache(cache: $cache, responseFactory: $factory, streamFactory: $factory);
+
+    // Pre-poison the cache with garbage at the key for our request.
+    $request = signedPaymentRequest();
+    $headerLine = $request->getHeaderLine(Version::V1->signatureHeader());
+    $key = 'x402:idem:' . hash('sha256', 'eip155:8453|0xfrom|0xabc|' . $headerLine);
+    $cache->store[$key] = ['this is not a valid snapshot', 999];                // bogus shape
+
+    $paid = new PsrResponse(
+        200,
+        [Version::V1->responseHeader() => 'eyJ4IjoxfQ=='],
+        'fresh-response',
+    );
+    $handler = new CountingHandler($paid);
+
+    $response = $middleware->process($request, $handler);
+
+    expect($handler->calls)->toBe(1)                                            // not served from poisoned cache
+        ->and((string) $response->getBody())->toBe('fresh-response');
+});
