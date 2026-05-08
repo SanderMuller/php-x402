@@ -73,7 +73,7 @@ $client = new PayingClient(
 $response = $client->sendRequest($request);     // 402 → sign → retry → 200
 ```
 
-`PrivateKeyWallet` is fine for tests and CLI tools. **For production, implement `X402\Client\Wallet` against a KMS** (AWS, GCP, HSM) so private keys never sit in process memory.
+`PrivateKeyWallet` is fine for tests and CLI tools. **For production, implement `X402\Client\Wallet` against a KMS** (AWS, GCP, HSM) so private keys never sit in process memory. See [`docs/kms.md`](docs/kms.md) for the contract details, AWS-KMS reference impl, and the three rules every adapter must follow (low-s normalization, DER → raw conversion, recovery-id derivation).
 
 ## Surface
 
