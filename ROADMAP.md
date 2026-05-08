@@ -24,6 +24,7 @@ gaps in commit messages.
 | `payment-identifier` extension | ✅ |
 | Replay protection (in-memory + interface for distributed stores) | ✅ |
 | PSR-15 server middleware + PSR-18 client decorator | ✅ |
+| `shouldEnforce` predicate — composable enforcement-policy hook on `PaymentEnforcer` | ✅ |
 | Coinbase facilitator + self-hosted (`x402-rs`) compatibility | ✅ |
 
 ---
@@ -91,6 +92,26 @@ the actual settled cost back from the facilitator.
   and a key-rotation surface that 99% of integrations don't touch.
 - **Re-trigger**: Facilitator vendors require it for compliance
   reasons.
+
+### Per-request challenge augmentation (`ChallengeFilter` hook)
+
+- **Status**: Not implemented. `shouldEnforce` (shipped) gates the
+  pipeline yes/no; there's no hook to *mutate* the challenge list
+  per request.
+- **Why deferred**: Two slots is one too many until the use case
+  is concrete. `shouldEnforce` already covers gating; a separate
+  filter only earns its place when adapters need to re-price per
+  request (e.g. "bots pay $0.01, paid users pay $0.001 on the same
+  resource") and `PriceTable::challengesFor()` keyed on resource
+  alone isn't enough.
+- **Re-trigger**: Downstream adapter (laravel-x402 or other) hits a
+  pricing tier that can't be expressed by routing the request to a
+  different `resource` string. At that point: add
+  `?Closure(ServerRequestInterface, PaymentRequired[]): PaymentRequired[]`
+  after `shouldEnforce` in the ctor; do not generalize speculatively.
+- **Workaround today**: Resolve to a different `resource` string in
+  the adapter's resource resolver based on request context, and let
+  the existing `PriceTable` lookup pick the right challenge list.
 
 ### Sign-in-with-X (SIWX / SIWE)
 
