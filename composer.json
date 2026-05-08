@@ -83,7 +83,9 @@
         "phpstan-simplified": "vendor/bin/phpstan analyse --memory-limit=2G --error-format symplify",
         "phpstan-clear-cache": "vendor/bin/phpstan clear-result-cache",
         "format": "vendor/bin/pint",
+        "format-check": "vendor/bin/pint --test",
         "rector": "vendor/bin/rector process",
+        "rector-check": "vendor/bin/rector process --dry-run",
         "test": "vendor/bin/pest",
         "test-coverage": "vendor/bin/pest --coverage",
         "lean": "vendor/bin/lean-package-validator validate --validate-git-archive --keep-license --keep-readme",
@@ -91,6 +93,13 @@
             "@rector",
             "@format",
             "@phpstan-simplified"
+        ],
+        "ci": [
+            "@rector-check",
+            "@format-check",
+            "@phpstan",
+            "@test",
+            "@lean"
         ],
         "post-autoload-dump": [
             "@clear",
