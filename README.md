@@ -59,6 +59,19 @@ $middleware = new PaymentEnforcer(
 
 Pipe `$middleware` through any PSR-15 dispatcher.
 
+### Conditional enforcement
+
+Pass an optional `shouldEnforce` predicate to gate the whole pipeline per request — bot-only payment, IP allowlists, geo policy, plan-tier bypass:
+
+```php
+new PaymentEnforcer(
+    // ...
+    shouldEnforce: fn (ServerRequestInterface $r): bool => $bot->isBot($r->getHeaderLine('User-Agent')),
+);
+```
+
+Predicate returns `false` → inner handler runs, no challenge / no nonce claim / no facilitator hit. Default (`null`) = always enforce.
+
 ### Client — pay automatically on 402
 
 ```php
@@ -108,6 +121,14 @@ Conformance vectors in `tests/Fixtures/eip712-vectors.json` mirror the upstream 
 ## Roadmap
 
 See [`ROADMAP.md`](ROADMAP.md) for shipped scope and explicit non-goals (Solana client-side signing, Stellar, ERC-7710 redelegation chain hashing, RFC 9421, SIWX).
+
+## Changelog
+
+See [`CHANGELOG.md`](CHANGELOG.md). Updated automatically from GitHub release notes.
+
+## Contributing
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) — boundary rules, QA bar, crypto-stub gotcha, spec-drift policy.
 
 ## Security
 
