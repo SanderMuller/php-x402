@@ -10,6 +10,7 @@ use X402\Protocol\PaymentRequired;
 use X402\Protocol\PaymentSignature;
 use X402\Schemes\ReplayKeyExtractor;
 use X402\Schemes\SchemeContract;
+use X402\Support\DecimalCompare;
 use X402\Support\JsonReader;
 
 /**
@@ -119,7 +120,7 @@ final class Permit2Scheme implements ReplayKeyExtractor, SchemeContract
             );
         }
 
-        if ($this->compareAmount($amount, $challenge->amount) > 0) {
+        if (DecimalCompare::compare($amount, $challenge->amount) > 0) {
             throw InvalidPaymentException::with(
                 ErrorReason::InvalidExactEvmAuthValueMismatch,
                 'Permit2 permitted.amount exceeds challenge amount.',
@@ -158,28 +159,5 @@ final class Permit2Scheme implements ReplayKeyExtractor, SchemeContract
             'nonce' => JsonReader::string($auth, 'nonce', 'Permit2 authorization'),
             'expiresAt' => JsonReader::int($auth, 'deadline', context: 'Permit2 authorization'),
         ];
-    }
-
-    /**
-     * Compare two stringified non-negative integers without overflowing PHP int.
-     */
-    private function compareAmount(string $a, string $b): int
-    {
-        $a = ltrim($a, '0');
-        $b = ltrim($b, '0');
-
-        if ($a === '') {
-            $a = '0';
-        }
-
-        if ($b === '') {
-            $b = '0';
-        }
-
-        if (\strlen($a) !== \strlen($b)) {
-            return \strlen($a) <=> \strlen($b);
-        }
-
-        return strcmp($a, $b);
     }
 }

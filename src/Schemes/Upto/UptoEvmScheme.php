@@ -12,6 +12,7 @@ use X402\Schemes\Evm\Constants;
 use X402\Schemes\Evm\NetworkRegistry;
 use X402\Schemes\ReplayKeyExtractor;
 use X402\Schemes\SchemeContract;
+use X402\Support\DecimalCompare;
 use X402\Support\JsonReader;
 
 /**
@@ -114,7 +115,7 @@ final class UptoEvmScheme implements ReplayKeyExtractor, SchemeContract
         // MUST equal `challenge.amount`. A smaller permitted amount
         // would break the "settle up to max" guarantee; a larger one
         // would allow over-collection.
-        if ($this->compareAmount($amount, $challenge->amount) !== 0) {
+        if (DecimalCompare::compare($amount, $challenge->amount) !== 0) {
             throw InvalidPaymentException::with(
                 ErrorReason::InvalidExactEvmAuthValueMismatch,
                 'upto permitted.amount must equal challenge amount (the ceiling).',
@@ -153,17 +154,5 @@ final class UptoEvmScheme implements ReplayKeyExtractor, SchemeContract
             'nonce' => JsonReader::string($auth, 'nonce', 'upto authorization'),
             'expiresAt' => JsonReader::int($auth, 'deadline', context: 'upto authorization'),
         ];
-    }
-
-    private function compareAmount(string $a, string $b): int
-    {
-        $a = ltrim($a, '0') === '' ? '0' : ltrim($a, '0');
-        $b = ltrim($b, '0') === '' ? '0' : ltrim($b, '0');
-
-        if (\strlen($a) !== \strlen($b)) {
-            return \strlen($a) <=> \strlen($b);
-        }
-
-        return strcmp($a, $b);
     }
 }
