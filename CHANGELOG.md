@@ -5,6 +5,34 @@ All notable changes to `php-x402` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.4.0 - 2026-05-09
+
+### Breaking
+
+- **Custom non-`ReplayKeyExtractor` schemes lose in-process replay protection.** The 0.3.x BC fallback (custom `SchemeContract` implementations validating EIP-3009-shaped `payload.authorization` on `eip155:*` networks) is removed. Such schemes now defer replay protection entirely to the facilitator's on-chain nonce check. To restore in-process protection, implement `X402\Schemes\ReplayKeyExtractor::replayKey()` on your custom scheme — see `UPGRADING.md` for a migration diff. Built-in `Evm\ExactScheme`, `Evm\Permit2Scheme`, and `Upto\UptoEvmScheme` are unaffected (they implement the interface since 0.3.0). The 0.3.1 deprecation hop the spec called for did not ship — adopters with custom EIP-3009-shaped schemes upgrade directly from 0.3.x to 0.4.0 and need to plan the `ReplayKeyExtractor` migration before the bump.
+- **`PaymentResponseCache` constructor adds an optional `resourceResolver:` parameter** for cache-identity scoping, and the cache-key format changed (see Notes below). 0.3.x cached snapshots are unreadable by 0.4.0 readers — purge the cache namespace before deploying, or accept a one-time miss window during the upgrade. `UPGRADING.md` documents both paths.
+
+### What's new
+
+- **`X402\Server\IdempotencyKeyBuilder`** — transport-agnostic builder for paid-response idempotency cache keys. PSR-15 (`PaymentResponseCache`) and JSON-RPC (laravel-x402-mcp) consumers share the derivation. Uses `json_encode` (not `implode`) so caller-supplied scope strings can't collide via embedded delimiters; throws on empty `bindingBytes` so a transport adapter that forgets to validate the EIP-3009 signature field can't ship a forge-resistance hole. Schema versioned via an internal `v: 1` marker so the key shape can evolve deliberately.
+- **`X402\Support\DecimalCompare::compare()`** — extracted from three near-identical `compareAmount()` private methods on `Evm\ExactScheme`, `Evm\Permit2Scheme`, and `Upto\UptoEvmScheme`. Spaceship comparison of stringified non-negative decimals; side-steps PHP-int overflow on USDC / EIP-3009 / Permit2 amount fields.
+- **`X402\Server\InvokeResourceResolver`** — null-default + return-type guard for the `Closure|ResourceResolver|null` shape `PaymentEnforcer` and `PaymentResponseCache` both accept. Centralises the resolution path so the two middlewares can't drift on edge cases.
+- **`PaymentResponseCache` cross-route scoping.** The cache key now binds HTTP method + resolved resource alongside the signed-authorisation header bytes, so a paid response on `GET /premium-A` cannot replay onto `GET /premium-B` when the same X-PAYMENT header is reused. `PaymentSignature` does not bind the resource it was signed against, so the cache key has to do that work itself. The new optional `resourceResolver:` constructor argument controls how the resource is derived; default = `$request->getUri()->getPath()` (matches `PaymentEnforcer`'s default). Pass a custom resolver only when pricing-equivalent URIs should also share cached responses — pricing-collapse and content-collapse are different invariants.
+
+### Bug fixes
+
+- **`IdempotencyKeyBuilder` non-injective serialisation** — the inlined `implode('|', …)` `PaymentResponseCache` used in 0.3.x let two different scope tuples collapse to the same preimage when any segment contained `|` (URIs and JSON-RPC method names can both legally contain it). The extracted helper switches to a structured `json_encode` payload with explicit keys + length-prefixed string encoding via JSON quoting.
+- **PSR-15 idempotency key ignored the protected resource** — `PaymentSignature::fromHeader()` only decodes `(scheme, network, payload)` and the cache key derived only from the header bytes, so two endpoints accepting the same X-PAYMENT header produced the same cache entry. The new method + resource scope closes the cross-route replay window.
+
+### Notes
+
+- `PaymentEnforcer::guardReplay()` reduced from ~50 lines to ~20. The hardcoded EIP-3009 normalisation (`Constants::TRANSFER_METHOD_EIP3009`, `eip155:` prefix matching) is gone — replay-key extraction is now entirely scheme-owned via `ReplayKeyExtractor`.
+- Cache-key format changed in two ways: serialisation switched from `implode` to `json_encode`, and the PSR-15 path now mixes in HTTP method + resolved resource. Both invalidate 0.3.x on-disk format. `UPGRADING.md` describes a per-prefix bump or one-time miss-window strategy for adopters with persistent caches.
+- Eight new tests across `IdempotencyKeyBuilderTest`, `DecimalCompareTest`, and the existing `PaymentEnforcerTest` / `PaymentResponseCacheTest` — covering the BC fallback fall-through, cross-route replay, cross-method replay, resolver alignment, delimiter-bearing scope collisions, and empty-`bindingBytes` rejection.
+- No DTO shape change. No `NonceStoreContract` change. No behaviour change for built-in schemes (`Evm\ExactScheme`, `Evm\Permit2Scheme`, `Upto\UptoEvmScheme`, `Evm\Erc7710Scheme`, Stellar / Svm `ExactScheme`).
+
+**Full Changelog**: https://github.com/SanderMuller/php-x402/compare/0.3.0...0.4.0
+
 ## 0.3.0 - 2026-05-09
 
 ### What's new
@@ -17,6 +45,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
       static fn (string $key, int $ttl): bool
           => (bool) $redis->set($key, '1', ['NX', 'EX' => $ttl]),
   );
+  
   
   ```
 - **`PaymentResponseCache` response-header allow-list + hard-block.** Cached snapshots no longer include `Set-Cookie`, `Authorization`, `Proxy-Authorization`, `Www-Authenticate`, or `Cookie` regardless of caller-supplied allow-list — these would otherwise let a stolen `X-PAYMENT` header replayer inherit the original buyer's session. Hard-block runs on the read path too, so any pre-0.3.0 snapshots in your persistent PSR-16 store get sanitised on first hit after upgrade. Default allow-list (`Content-Type`, `Content-Language`, `Content-Length`, `Content-Disposition`, `Cache-Control`, `ETag`, `Last-Modified`, `Location`, `X-PAYMENT-RESPONSE`, `PAYMENT-RESPONSE`) is overrideable via the new `responseHeadersAllowList` constructor arg; the hard-block list is enforced regardless.
