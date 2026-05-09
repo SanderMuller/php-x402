@@ -29,6 +29,18 @@ gaps in commit messages.
 
 ---
 
+## Shipped (post-v0.1)
+
+| Version | Change                                                                                                 |
+|---------|--------------------------------------------------------------------------------------------------------|
+| 0.2.0   | `PaymentResponseCache` (idempotent retry on dropped responses), `RegexPriceTable`, `bin/x402` CLI      |
+| 0.2.1   | Replay-gate harden (Permit2-injection bypass closed), `v`-byte validation, `Psr16NonceStore` doc fix   |
+| 0.3.0   | `X402\Schemes\ReplayKeyExtractor` opt-in interface; `CallbackNonceStore`; response-header allow-list    |
+| 0.3.1   | Deprecation `warning` log when `PaymentEnforcer` BC fallback for non-RKE EIP-3009 schemes fires        |
+| 0.4.0   | **Mandatory** `ReplayKeyExtractor` for in-process replay protection — BC fallback removed              |
+
+---
+
 ## Deferred — explicit non-goals for v1
 
 These are **known gaps** from the upstream spec. Each entry lists the

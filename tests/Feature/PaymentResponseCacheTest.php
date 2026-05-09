@@ -16,6 +16,7 @@ use X402\Protocol\Version;
 use X402\Schemes\Evm\ExactScheme;
 use X402\Schemes\Evm\Permit2Scheme;
 use X402\Schemes\SchemeContract;
+use X402\Server\IdempotencyKeyBuilder;
 use X402\Server\PaymentResponseCache;
 
 final class IdempotencyArrayCache implements CacheInterface
@@ -259,7 +260,13 @@ it('falls through to handler when the cached snapshot is malformed', function ()
     // Pre-poison the cache with garbage at the key for our request.
     $request = signedPaymentRequest();
     $headerLine = $request->getHeaderLine(Version::V1->signatureHeader());
-    $key = 'x402:idem:' . hash('sha256', 'eip155:8453|0xfrom|0xabc|' . $headerLine);
+    $key = IdempotencyKeyBuilder::build(
+        network: 'eip155:8453',
+        from: '0xfrom',
+        nonce: '0xabc',
+        bindingBytes: $headerLine,
+        scope: ['GET', (string) $request->getUri()],
+    );
     $cache->store[$key] = ['this is not a valid snapshot', 999];                // bogus shape
 
     $paid = new PsrResponse(
@@ -410,8 +417,7 @@ it('does not emit warning-level logs from public traffic (drift signal stays at 
     // Cache sits on the unauthenticated edge — an attacker can send any
     // X-PAYMENT header. Drift detection fires on every skip path, but
     // must stay at debug so warning-level logs are not spoofable from
-    // public traffic. Codex pass 5 of 0.3.0 flagged the prior warning
-    // emission as a log-flooding vector.
+    // public traffic.
     $cache = new IdempotencyArrayCache();
     $factory = new Psr17Factory();
 
@@ -697,10 +703,21 @@ it('strips hard-blocked headers on rebuild from stale (pre-0.3.0) cached snapsho
     );
     $handler = new CountingHandler(new PsrResponse(500)); // shouldn't be hit
 
-    // Build the cache key the middleware would use.
+    // Build the cache key the middleware would use. Goes through
+    // IdempotencyKeyBuilder so this test stays correct as the key
+    // shape evolves — pinning the raw `sha256(...)` preimage would
+    // mean every cache-key refactor silently invalidates the test's
+    // intent (we want to test rebuild()'s hard-block, not the hash
+    // derivation).
     $request = signedPaymentRequest(nonce: '0xstale-nonce');
     $headerLine = $request->getHeaderLine(Version::V1->signatureHeader());
-    $key = 'x402:idem:' . hash('sha256', 'eip155:8453|0xfrom|0xstale-nonce|' . $headerLine);
+    $key = IdempotencyKeyBuilder::build(
+        network: 'eip155:8453',
+        from: '0xfrom',
+        nonce: '0xstale-nonce',
+        bindingBytes: $headerLine,
+        scope: ['GET', (string) $request->getUri()],
+    );
 
     // Inject a stale snapshot with sensitive headers (as a pre-0.3.0
     // version would have written).
@@ -765,7 +782,13 @@ it('rejects pre-0.3.0 cached snapshots with 206 status (fails closed on read pat
 
     $request = signedPaymentRequest(nonce: '0xstale-206');
     $headerLine = $request->getHeaderLine(Version::V1->signatureHeader());
-    $key = 'x402:idem:' . hash('sha256', 'eip155:8453|0xfrom|0xstale-206|' . $headerLine);
+    $key = IdempotencyKeyBuilder::build(
+        network: 'eip155:8453',
+        from: '0xfrom',
+        nonce: '0xstale-206',
+        bindingBytes: $headerLine,
+        scope: ['GET', (string) $request->getUri()],
+    );
 
     $cache->store[$key] = [
         'status' => 206,
@@ -793,7 +816,13 @@ it('rejects pre-0.3.0 cached snapshots with variant headers (Content-Encoding)',
 
     $request = signedPaymentRequest(nonce: '0xstale-gzip');
     $headerLine = $request->getHeaderLine(Version::V1->signatureHeader());
-    $key = 'x402:idem:' . hash('sha256', 'eip155:8453|0xfrom|0xstale-gzip|' . $headerLine);
+    $key = IdempotencyKeyBuilder::build(
+        network: 'eip155:8453',
+        from: '0xfrom',
+        nonce: '0xstale-gzip',
+        bindingBytes: $headerLine,
+        scope: ['GET', (string) $request->getUri()],
+    );
 
     $cache->store[$key] = [
         'status' => 200,
@@ -806,4 +835,148 @@ it('rejects pre-0.3.0 cached snapshots with variant headers (Content-Encoding)',
 
     expect($handler->calls)->toBe(1)
         ->and((string) $response->getBody())->toBe('fresh');
+});
+
+it('does not replay a paid response across different request URIs even with the same X-PAYMENT', function (): void {
+    // A signed `PaymentSignature` does not bind the resource URI it was
+    // signed against — it only commits to (network, scheme, payload).
+    // Without route scoping in the cache key, a paid response for
+    // `GET /premium-A` could be served on `GET /premium-B` if both
+    // routes share the same payTo/asset/amount and a caller reuses
+    // the signed authorization. PaymentEnforcer would normally reject
+    // the replayed nonce, but the cache lookup runs before the
+    // enforcer — so a route-agnostic cache hit returns A's body
+    // before B's challenge match check ever runs.
+    $cache = new IdempotencyArrayCache();
+    $factory = new Psr17Factory();
+    $middleware = new PaymentResponseCache(
+        cache: $cache,
+        responseFactory: $factory,
+        streamFactory: $factory,
+        schemes: ['exact' => new ExactScheme()],
+    );
+
+    $signature = new PaymentSignature(
+        scheme: 'exact',
+        network: 'eip155:8453',
+        payload: [
+            'authorization' => ['from' => '0xfrom', 'nonce' => '0xshared', 'validBefore' => 9999999999],
+            'signature' => '0xsig',
+        ],
+    );
+    $headerValue = $signature->toHeader();
+
+    $aResponse = new PsrResponse(
+        200,
+        [Version::V1->responseHeader() => 'eyJhIjoxfQ=='],
+        'route-A-body',
+    );
+    $bResponse = new PsrResponse(
+        200,
+        [Version::V1->responseHeader() => 'eyJiIjoyfQ=='],
+        'route-B-body',
+    );
+
+    $aHandler = new CountingHandler($aResponse);
+    $bHandler = new CountingHandler($bResponse);
+
+    $aRequest = (new ServerRequest('GET', '/premium-A'))
+        ->withHeader(Version::V1->signatureHeader(), $headerValue);
+    $bRequest = (new ServerRequest('GET', '/premium-B'))
+        ->withHeader(Version::V1->signatureHeader(), $headerValue);
+
+    $middleware->process($aRequest, $aHandler);
+    $bResult = $middleware->process($bRequest, $bHandler);
+
+    expect($bHandler->calls)->toBe(1)                                            // B's handler ran (cache miss)
+        ->and((string) $bResult->getBody())->toBe('route-B-body')                // B's body returned
+        ->and($cache->store)->toHaveCount(2);                                    // distinct cache entries per route
+});
+
+it('does not replay a paid response across different HTTP methods on the same URI', function (): void {
+    // Same defense, different axis: GET /resource and POST /resource
+    // are distinct operations even when the signed payment is identical.
+    $cache = new IdempotencyArrayCache();
+    $factory = new Psr17Factory();
+    $middleware = new PaymentResponseCache(
+        cache: $cache,
+        responseFactory: $factory,
+        streamFactory: $factory,
+        schemes: ['exact' => new ExactScheme()],
+    );
+
+    $signature = new PaymentSignature(
+        scheme: 'exact',
+        network: 'eip155:8453',
+        payload: [
+            'authorization' => ['from' => '0xfrom', 'nonce' => '0xshared', 'validBefore' => 9999999999],
+            'signature' => '0xsig',
+        ],
+    );
+    $headerValue = $signature->toHeader();
+
+    $getHandler = new CountingHandler(new PsrResponse(200, [Version::V1->responseHeader() => 'eyJ4IjoxfQ=='], 'GET-body'));
+    $postHandler = new CountingHandler(new PsrResponse(201, [Version::V1->responseHeader() => 'eyJ4IjoxfQ=='], 'POST-body'));
+
+    $middleware->process(
+        (new ServerRequest('GET', '/resource'))->withHeader(Version::V1->signatureHeader(), $headerValue),
+        $getHandler,
+    );
+    $postResult = $middleware->process(
+        (new ServerRequest('POST', '/resource'))->withHeader(Version::V1->signatureHeader(), $headerValue),
+        $postHandler,
+    );
+
+    expect($postHandler->calls)->toBe(1)
+        ->and((string) $postResult->getBody())->toBe('POST-body')
+        ->and($postResult->getStatusCode())->toBe(201);
+});
+
+it('uses the configured resourceResolver so cache scoping aligns with PaymentEnforcer', function (): void {
+    // PaymentEnforcer prices on resolveResource(); PaymentResponseCache
+    // MUST hash the same logical resource so a dropped-response retry
+    // hits the cache. If the cache used raw URI but the enforcer used
+    // a normalized path, equivalent retries (host alias, query
+    // normalization, custom name-based resolver) would miss the
+    // cache and 402 as a replay.
+    $cache = new IdempotencyArrayCache();
+    $factory = new Psr17Factory();
+
+    // Resolver maps anything under `/api/v\d+/premium` to a single
+    // logical resource — what the enforcer would also do.
+    $resolver = (static fn (ServerRequestInterface $request): string => preg_replace('#^/api/v\d+/#', '/api/', $request->getUri()->getPath()) ?? $request->getUri()->getPath());
+
+    $middleware = new PaymentResponseCache(
+        cache: $cache,
+        responseFactory: $factory,
+        streamFactory: $factory,
+        schemes: ['exact' => new ExactScheme()],
+        resourceResolver: $resolver,
+    );
+
+    $signature = new PaymentSignature(
+        scheme: 'exact',
+        network: 'eip155:8453',
+        payload: [
+            'authorization' => ['from' => '0xfrom', 'nonce' => '0xshared', 'validBefore' => 9999999999],
+            'signature' => '0xsig',
+        ],
+    );
+    $headerValue = $signature->toHeader();
+
+    $handler = new CountingHandler(new PsrResponse(
+        200,
+        [Version::V1->responseHeader() => 'eyJ4IjoxfQ=='],
+        'paid',
+    ));
+
+    // Two URIs that the resolver collapses to the same logical resource.
+    $v1 = (new ServerRequest('GET', '/api/v1/premium'))->withHeader(Version::V1->signatureHeader(), $headerValue);
+    $v2 = (new ServerRequest('GET', '/api/v2/premium'))->withHeader(Version::V1->signatureHeader(), $headerValue);
+
+    $middleware->process($v1, $handler);
+    $middleware->process($v2, $handler);
+
+    expect($handler->calls)->toBe(1)                                            // resolver collapsed to same resource → cache hit on retry
+        ->and($cache->store)->toHaveCount(1);
 });

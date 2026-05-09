@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace X402\Server;
 
+use Closure;
 use Psr\Http\Message\ResponseFactoryInterface;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
@@ -123,6 +124,7 @@ final readonly class PaymentResponseCache implements MiddlewareInterface
     /**
      * @param  array<string, SchemeContract>  $schemes  Same map you wire into PaymentEnforcer. Entries that implement `ReplayKeyExtractor` (Evm `ExactScheme` / `Permit2Scheme`, `UptoEvmScheme`) get cache keying. Entries that don't (`Erc7710Scheme`, Stellar / Svm `ExactScheme`) are kept out of the internal extractor map so requests routed to them simply fall through to the inner handler with a `debug` log line — passing the full enforcer map is the supported path.
      * @param  list<string>  $responseHeadersAllowList  Response header names retained in the cached snapshot. Compared case-insensitively. Override the default to keep app-specific headers (e.g. CORS); the hard-block list (`set-cookie`, `authorization`, …) is enforced regardless.
+     * @param  Closure(ServerRequestInterface): string|ResourceResolver|null  $resourceResolver  Optional. Resolves a request to the cache-identity string mixed into the response-cache key alongside HTTP method. Default = `$request->getUri()->getPath()` (matches `PaymentEnforcer`'s default; a paid retry on the same URI hits the cache). Pass a custom resolver only when you want pricing-equivalent URIs to also share cached responses — the trade-off: any URI the resolver collapses will replay the SAME cached body, which is correct for paid endpoints whose response is fully determined by the resolved resource (e.g. `/api/v1/premium` and `/api/v2/premium` returning identical bytes), but wrong when those URIs return different content. When in doubt, leave this null — pricing-collapse and content-collapse are different invariants.
      */
     public function __construct(
         private CacheInterface $cache,
@@ -134,6 +136,7 @@ final readonly class PaymentResponseCache implements MiddlewareInterface
         private string $prefix = 'x402:idem:',
         ?LoggerInterface $logger = null,
         array $responseHeadersAllowList = self::DEFAULT_RESPONSE_HEADER_ALLOWLIST,
+        private Closure|ResourceResolver|null $resourceResolver = null,
     ) {
         // Filter to ReplayKeyExtractors silently. Adopters typically
         // pass the same map they wire into PaymentEnforcer, which can
@@ -275,16 +278,29 @@ final readonly class PaymentResponseCache implements MiddlewareInterface
             return null;
         }
 
-        // Critical: the key MUST include the raw header bytes, not just
-        // the (network, from, nonce) tuple. `from` and `nonce` become
-        // public on-chain after settlement; an attacker who observes a
-        // paid request could otherwise forge ANY header with that tuple,
-        // hit the cache, and receive the cached protected response
-        // without paying. Hashing the headerLine binds the cache entry
-        // to the actual signed authorization bytes.
-        $key = $this->prefix . hash(
-            'sha256',
-            $signature->network . '|' . strtolower($replayKey['from']) . '|' . strtolower($replayKey['nonce']) . '|' . $headerLine,
+        // Key derivation lives in `IdempotencyKeyBuilder` so JSON-RPC
+        // transports (laravel-x402-mcp) can hash the same way. PSR-15
+        // pins forge-resistance to the raw header bytes — an attacker
+        // who observed a paid request cannot reproduce them without the
+        // private key. JSON-RPC consumers pass the EIP-3009 signature
+        // field instead, since `params._meta` is JSON-decoded by the
+        // transport and the original bytes are no longer available.
+        //
+        // The `scope` mixes in HTTP method + request URI so a paid
+        // response for `GET /premium-A` cannot be served back on
+        // `GET /premium-B` (or `POST /premium-A`) just because the
+        // same signed authorization was reused — `PaymentSignature`
+        // does not bind the resource it was signed against, so the
+        // cache key must do that work itself.
+        $resource = $this->resolveResource($request);
+
+        $key = IdempotencyKeyBuilder::build(
+            network: $signature->network,
+            from: $replayKey['from'],
+            nonce: $replayKey['nonce'],
+            bindingBytes: $headerLine,
+            scope: [$request->getMethod(), $resource],
+            prefix: $this->prefix,
         );
 
         return ['key' => $key, 'signature' => $signature];
@@ -440,5 +456,10 @@ final readonly class PaymentResponseCache implements MiddlewareInterface
         $body = JsonReader::stringOrNull($stringKeyed, 'body') ?? '';
 
         return $response->withBody($this->streamFactory->createStream($body));
+    }
+
+    private function resolveResource(ServerRequestInterface $request): string
+    {
+        return InvokeResourceResolver::resolve($this->resourceResolver, $request, self::class);
     }
 }

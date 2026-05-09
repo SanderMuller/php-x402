@@ -1,5 +1,79 @@
 # Upgrading
 
+## From 0.3.x to 0.4.0
+
+### `PaymentResponseCache` cache-key format changed — purge or accept a one-time miss window
+
+0.4.0 changes the idempotency-cache key derivation in two ways:
+
+1. The serialisation switched from `implode('|', …)` to `json_encode(…)` so caller-supplied scope strings can't collide via embedded delimiters.
+2. The PSR-15 cache key now mixes in HTTP method + resolved resource (URI path by default), preventing cross-route replay of cached paid responses.
+
+Both changes invalidate the on-disk format: cached entries written by 0.3.x are unreadable by 0.4.0. Two options on upgrade:
+
+- **Purge the cache** before deploying 0.4.0. Recommended when you can take the operational hit. Adopters using a per-app prefix can `redis-cli del` the namespace.
+- **Accept a transient cache-miss window**. Stale 0.3.x entries become invisible; in-flight retries during the deploy that would have hit the old cache fall through to `PaymentEnforcer`. If the original nonce was already claimed, the retry returns 402. Affected users were already at risk on the 0.3.x path; this isn't worse, just different.
+
+For mixed-version rolling deploys against a shared cache, the old/new node pair will not see each other's writes during the rollout window. Plan accordingly — drain in-flight before flipping, or use distinct prefixes per release.
+
+### `PaymentEnforcer` BC fallback for non-`ReplayKeyExtractor` EIP-3009 schemes is removed
+
+> [!CAUTION]
+> **Silent security-behavior change.** Custom `SchemeContract`
+> implementations that validate an EIP-3009-shaped `payload.authorization`
+> on `eip155:*` networks lost their in-process replay protection in
+> 0.4.0. Settlements still succeed, so no error surfaces — but the
+> nonce store is no longer claimed for those requests, so replay
+> protection collapses back to whatever the facilitator enforces.
+>
+> 0.3.1 logged a `warning`-level deprecation line whenever this path
+> fired (`x402: PaymentEnforcer BC fallback in use …`). Grep your
+> production logs for `BC fallback in use` before upgrading. Any
+> scheme class named there must implement `ReplayKeyExtractor` to
+> retain in-process protection.
+
+To migrate a custom scheme:
+
+```diff
++use X402\Schemes\ReplayKeyExtractor;
++
+-final class MyExactScheme implements SchemeContract
++final class MyExactScheme implements ReplayKeyExtractor, SchemeContract
+ {
+     public function verifyShape(PaymentSignature $signature, PaymentRequired $challenge): void
+     {
+         // …existing JsonReader::string($auth, 'from', …) etc.
+     }
++
++    /**
++     * @return array{from: string, nonce: string, expiresAt: int}
++     */
++    public function replayKey(PaymentSignature $signature): array
++    {
++        $auth = JsonReader::array($signature->payload, 'authorization', 'my exact payload');
++
++        return [
++            'from'      => JsonReader::string($auth, 'from', 'my exact authorization'),
++            'nonce'     => JsonReader::string($auth, 'nonce', 'my exact authorization'),
++            'expiresAt' => JsonReader::int($auth, 'validBefore', context: 'my exact authorization'),
++        ];
++    }
+ }
+```
+
+`replayKey()` MUST mirror the field-reading rules of `verifyShape()` —
+in particular, use `JsonReader::string()` (which coerces numeric JSON
+to string) rather than `stringOrNull()` so a numeric `nonce` doesn't
+silently skip the in-process claim while still settling. See
+`X402\Schemes\Evm\ExactScheme::replayKey()` for the canonical EIP-3009
+implementation.
+
+Schemes that genuinely defer replay protection to the facilitator's
+on-chain nonce check (no `payload.authorization` shape) are
+unaffected. Built-in `Evm\ExactScheme`, `Evm\Permit2Scheme`, and
+`Upto\UptoEvmScheme` already implement `ReplayKeyExtractor` since
+0.3.0 and require no migration.
+
 ## From 0.2.x to 0.3.0
 
 ### `PaymentResponseCache` constructor now requires a `schemes` map
@@ -78,11 +152,17 @@ hard-block list is enforced regardless.
 
 `X402\Schemes\ReplayKeyExtractor` is a new optional capability
 interface. Schemes that opt in surface their `(from, nonce, expiresAt)`
-triple for in-process replay claiming. **Custom `SchemeContract`
-implementations do not need to change** — schemes that don't implement
-`ReplayKeyExtractor` continue to defer replay protection to the
-facilitator's on-chain nonce check (the same behavior 0.2.x had for
-non-EIP-3009 schemes).
+triple for in-process replay claiming.
+
+> [!IMPORTANT]
+> **Custom `SchemeContract` implementations that validate an
+> EIP-3009-shaped `payload.authorization` on `eip155:*` networks**
+> got in-process replay protection in 0.3.x via a BC fallback in
+> `PaymentEnforcer::guardReplay()`. **That fallback is removed in
+> 0.4.0** — see the [0.3.x → 0.4.0 section](#from-03x-to-040) above
+> for the migration diff. If you operate a custom EIP-3009-shaped
+> scheme, plan the `ReplayKeyExtractor` migration before upgrading
+> past 0.3.x.
 
 If you want in-process replay protection for a custom scheme, add
 `implements ReplayKeyExtractor` and a `replayKey()` method. The
@@ -90,6 +170,12 @@ extractor MUST mirror the validation rules of your `verifyShape()` —
 in particular, use `JsonReader::string()` (which coerces numeric JSON
 to string) rather than `stringOrNull()` so a numeric `nonce` doesn't
 silently skip the in-process claim while still settling.
+
+Schemes that genuinely defer replay protection to the facilitator's
+on-chain nonce check (no `payload.authorization` shape, or chains
+where on-chain sequence is the source of truth) keep working without
+implementing `ReplayKeyExtractor` — they're outside the migration
+scope.
 
 ### Built-in atomic `CallbackNonceStore`
 

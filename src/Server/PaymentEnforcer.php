@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace X402\Server;
 
 use Closure;
-use LogicException;
 use Psr\Http\Message\ResponseFactoryInterface;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
@@ -23,7 +22,6 @@ use X402\Protocol\PaymentSignature;
 use X402\Protocol\Version;
 use X402\Replay\InMemoryNonceStore;
 use X402\Replay\NonceStoreContract;
-use X402\Schemes\Evm\Constants;
 use X402\Schemes\Evm\ExactScheme;
 use X402\Schemes\ReplayKeyExtractor;
 use X402\Schemes\SchemeContract;
@@ -145,7 +143,7 @@ final readonly class PaymentEnforcer implements MiddlewareInterface
             $challenge = $this->matchChallenge($signature, $challenges);
             $scheme = $this->schemeFor($signature->scheme);
             $scheme->verifyShape($signature, $challenge);
-            $this->guardReplay($scheme, $signature, $challenge);
+            $this->guardReplay($scheme, $signature);
         } catch (InvalidPaymentException $invalidPaymentException) {
             $this->logger->warning('x402: invalid payment payload', ['reason' => $invalidPaymentException->getMessage()]);
 
@@ -321,40 +319,20 @@ final readonly class PaymentEnforcer implements MiddlewareInterface
         return $this->schemes[$name];
     }
 
-    private function guardReplay(SchemeContract $scheme, PaymentSignature $signature, PaymentRequired $challenge): void
+    private function guardReplay(SchemeContract $scheme, PaymentSignature $signature): void
     {
-        // Preferred path — schemes opt into in-process replay claiming
-        // by implementing `ReplayKeyExtractor`. Each scheme reads only
-        // payload fields it validates in `verifyShape`, so a caller
-        // cannot inject extra payload keys to redirect the claim.
+        // Schemes opt into in-process replay claiming by implementing
+        // `ReplayKeyExtractor`. Each scheme reads only payload fields it
+        // validates in `verifyShape`, so a caller cannot inject extra
+        // payload keys to redirect the claim. Schemes without the
+        // interface defer replay protection to the facilitator's
+        // on-chain nonce check.
+        //
+        // 0.3.x carried a BC fallback for custom non-RKE schemes that
+        // validated an EIP-3009-shaped payload — that fallback is gone
+        // as of 0.4.0. See `internal/spec-0.4-drop-replay-bc-fallback.md`
+        // and the 0.3 → 0.4 section of `UPGRADING.md`.
         $key = $scheme instanceof ReplayKeyExtractor ? $scheme->replayKey($signature) : null;
-
-        // Backwards-compat fallback for custom `SchemeContract`
-        // implementations that haven't migrated to `ReplayKeyExtractor`
-        // yet but still validate an EIP-3009-shaped `payload.authorization`
-        // (the only path 0.2.x protected). Gate on the *challenge*
-        // (server-controlled) so a caller can't bypass by manipulating
-        // payload keys: scheme="exact" + network=eip155:* +
-        // assetTransferMethod=eip3009 (default), with normalization
-        // matching ExactScheme::verifyShape.
-        if ($key === null && ! $scheme instanceof ReplayKeyExtractor) {
-            $rawMethod = $challenge->extra['assetTransferMethod'] ?? null;
-            $declaredMethod = is_string($rawMethod) ? $rawMethod : Constants::TRANSFER_METHOD_EIP3009;
-            $isLegacyEip3009Evm = $signature->scheme === ExactScheme::NAME
-                && str_starts_with($signature->network, 'eip155:')
-                && $declaredMethod === Constants::TRANSFER_METHOD_EIP3009;
-
-            if ($isLegacyEip3009Evm) {
-                $auth = $signature->authorization();
-                if ($auth !== null) {
-                    $key = [
-                        'from' => $auth['from'],
-                        'nonce' => $auth['nonce'],
-                        'expiresAt' => $auth['validBefore'],
-                    ];
-                }
-            }
-        }
 
         if ($key === null) {
             $this->logger->debug('x402: no replay key for scheme — deferring to facilitator', [
@@ -377,16 +355,6 @@ final readonly class PaymentEnforcer implements MiddlewareInterface
 
     private function resolveResource(ServerRequestInterface $request): string
     {
-        if ($this->resourceResolver === null) {
-            return $request->getUri()->getPath();
-        }
-
-        $resolved = ($this->resourceResolver)($request);
-
-        if (! is_string($resolved)) {
-            throw new LogicException('resourceResolver must return a string.');
-        }
-
-        return $resolved;
+        return InvokeResourceResolver::resolve($this->resourceResolver, $request, self::class);
     }
 }

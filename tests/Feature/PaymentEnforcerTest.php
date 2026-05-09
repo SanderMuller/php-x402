@@ -467,13 +467,21 @@ it('accepts a ResourceResolver instance and an EnforcementPolicy instance', func
     expect($enforcer->process($human, new OkHandler())->getStatusCode())->toBe(200);
 });
 
-it('claims nonces for custom SchemeContract impls that match the legacy EIP-3009 shape (BC fallback)', function (): void {
-    // Pre-0.3.0, PaymentEnforcer claimed nonces for any scheme named
-    // "exact" on eip155:* with assetTransferMethod=eip3009 by reading
-    // payload.authorization. 0.3.0 introduces the ReplayKeyExtractor
-    // opt-in interface, but legacy custom schemes that haven't
-    // migrated must keep the protection they had — silently dropping
-    // claim on upgrade would be a security regression.
+it('does NOT claim nonces for custom non-RKE schemes — defers to facilitator (0.4.0 BC removal regression guard)', function (): void {
+    // 0.3.x BC fallback (custom scheme named "exact" on eip155:* with
+    // assetTransferMethod=eip3009 reading payload.authorization
+    // directly) was REMOVED in 0.4.0 — see
+    // internal/spec-0.4-drop-replay-bc-fallback.md. Custom schemes
+    // that want in-process replay protection now MUST implement
+    // X402\Schemes\ReplayKeyExtractor.
+    //
+    // This test pins the new contract: same setup as the 0.3.x
+    // "BC fallback claims nonces" test, but assert (a) the local
+    // nonce store is never touched, (b) the request still settles
+    // (no in-process gate, defers to facilitator's nonce check),
+    // (c) a *second* request with the same signature ALSO reaches
+    // the facilitator — proof that the in-process replay block is
+    // gone for non-RKE custom schemes.
     $challenge = new PaymentRequired(
         scheme: 'exact',
         network: 'eip155:8453',
@@ -486,9 +494,10 @@ it('claims nonces for custom SchemeContract impls that match the legacy EIP-3009
 
     $factory = new Psr17Factory();
     $store = new InMemoryNonceStore();
+    $facilitator = new RecordingFacilitator();
 
-    // Custom scheme that does NOT implement ReplayKeyExtractor but
-    // accepts the same EIP-3009 payload shape ExactScheme does.
+    // Custom scheme that does NOT implement ReplayKeyExtractor.
+    // Validates the same EIP-3009 shape ExactScheme does.
     $legacyExact = new class implements SchemeContract {
         public function name(): string
         {
@@ -508,7 +517,7 @@ it('claims nonces for custom SchemeContract impls that match the legacy EIP-3009
 
     $enforcer = new PaymentEnforcer(
         priceTable: $priceTable,
-        facilitator: new StubFacilitator(),
+        facilitator: $facilitator,
         nonceStore: $store,
         schemes: ['exact' => $legacyExact],
         responseFactory: $factory,
@@ -521,8 +530,17 @@ it('claims nonces for custom SchemeContract impls that match the legacy EIP-3009
     $from = $payload['payload']['authorization']['from'];
     $nonce = $payload['payload']['authorization']['nonce'];
 
-    $enforcer->process($request, new OkHandler());
+    $first = $enforcer->process($request, new OkHandler());
+    $second = $enforcer->process($request, new OkHandler());
 
-    // Legacy fallback claimed the nonce — second claim returns false.
-    expect($store->claim('eip155:8453', $from, $nonce, 60))->toBeFalse();
+    // (a) Local nonce store untouched — slot is still claimable.
+    expect($store->claim('eip155:8453', $from, $nonce, 60))->toBeTrue();
+
+    // (b) + (c) Both requests reached verify+settle (facilitator is
+    // the only nonce-uniqueness check now for non-RKE schemes). If a
+    // future change reintroduces an in-process gate, this fails.
+    expect($facilitator->verifyCalls)->toBe(2)
+        ->and($facilitator->settleCalls)->toBe(2)
+        ->and($first->getStatusCode())->toBe(200)
+        ->and($second->getStatusCode())->toBe(200);
 });
