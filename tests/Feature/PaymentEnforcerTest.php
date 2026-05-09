@@ -466,3 +466,63 @@ it('accepts a ResourceResolver instance and an EnforcementPolicy instance', func
     $human = new ServerRequest('GET', '/anywhere');
     expect($enforcer->process($human, new OkHandler())->getStatusCode())->toBe(200);
 });
+
+it('claims nonces for custom SchemeContract impls that match the legacy EIP-3009 shape (BC fallback)', function (): void {
+    // Pre-0.3.0, PaymentEnforcer claimed nonces for any scheme named
+    // "exact" on eip155:* with assetTransferMethod=eip3009 by reading
+    // payload.authorization. 0.3.0 introduces the ReplayKeyExtractor
+    // opt-in interface, but legacy custom schemes that haven't
+    // migrated must keep the protection they had — silently dropping
+    // claim on upgrade would be a security regression.
+    $challenge = new PaymentRequired(
+        scheme: 'exact',
+        network: 'eip155:8453',
+        amount: '10000',
+        asset: '0xasset',
+        payTo: '0x000000000000000000000000000000000000beef',
+    );
+    $priceTable = new StaticPriceTable();
+    $priceTable->set('/premium', $challenge);
+
+    $factory = new Psr17Factory();
+    $store = new InMemoryNonceStore();
+
+    // Custom scheme that does NOT implement ReplayKeyExtractor but
+    // accepts the same EIP-3009 payload shape ExactScheme does.
+    $legacyExact = new class implements SchemeContract {
+        public function name(): string
+        {
+            return 'exact';
+        }
+
+        /**
+         * @return list<string>
+         */
+        public function supportedNetworks(): array
+        {
+            return ['eip155:8453'];
+        }
+
+        public function verifyShape(PaymentSignature $signature, PaymentRequired $challenge): void {}
+    };
+
+    $enforcer = new PaymentEnforcer(
+        priceTable: $priceTable,
+        facilitator: new StubFacilitator(),
+        nonceStore: $store,
+        schemes: ['exact' => $legacyExact],
+        responseFactory: $factory,
+        streamFactory: $factory,
+    );
+
+    $request = buildSignedRequest('X-PAYMENT');
+    $payload = json_decode((string) base64_decode($request->getHeaderLine('X-PAYMENT'), true), true);
+    /** @var array{payload: array{authorization: array{from: string, nonce: string}}} $payload */
+    $from = $payload['payload']['authorization']['from'];
+    $nonce = $payload['payload']['authorization']['nonce'];
+
+    $enforcer->process($request, new OkHandler());
+
+    // Legacy fallback claimed the nonce — second claim returns false.
+    expect($store->claim('eip155:8453', $from, $nonce, 60))->toBeFalse();
+});

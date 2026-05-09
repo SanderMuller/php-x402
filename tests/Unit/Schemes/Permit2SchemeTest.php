@@ -106,3 +106,61 @@ it('rejects expired deadline', function (): void {
         permit2Challenge(),
     );
 })->throws(InvalidPaymentException::class, 'deadline');
+
+it('exposes replayKey from payload.permit2Authorization', function (): void {
+    $key = (new Permit2Scheme())->replayKey(permit2Signature([
+        'from' => '0xFROM',
+        'nonce' => '0xNONCE',
+        'deadline' => 9999999999,
+    ]));
+
+    expect($key)->toBe([
+        'from' => '0xFROM',
+        'nonce' => '0xNONCE',
+        'expiresAt' => 9999999999,
+    ]);
+});
+
+it('ignores caller-injected payload.authorization (reads only permit2Authorization)', function (): void {
+    $signature = new PaymentSignature(
+        scheme: 'exact',
+        network: 'eip155:8453',
+        payload: [
+            'signature' => '0xdeadbeef',
+            'permit2Authorization' => [
+                'from' => '0xREAL',
+                'nonce' => '0xREALNONCE',
+                'deadline' => 9999999999,
+                'permitted' => ['token' => '0xt', 'amount' => '1'],
+                'spender' => '0xs',
+                'witness' => ['to' => '0xw', 'validAfter' => 1, 'facilitator' => '0xf'],
+            ],
+            // Forged extra block — must be ignored by Permit2Scheme::replayKey.
+            'authorization' => ['from' => '0xATTACKER', 'nonce' => '0xATTACKERNONCE', 'validBefore' => 9999999999],
+        ],
+    );
+
+    $key = (new Permit2Scheme())->replayKey($signature);
+
+    expect($key)->toBe([
+        'from' => '0xREAL',
+        'nonce' => '0xREALNONCE',
+        'expiresAt' => 9999999999,
+    ]);
+});
+
+it('coerces numeric nonce in replayKey (mirrors verifyShape)', function (): void {
+    $key = (new Permit2Scheme())->replayKey(permit2Signature([
+        'nonce' => 99,
+    ]));
+
+    expect($key['nonce'])->toBe('99');
+});
+
+it('throws on missing permit2Authorization in replayKey (fail-closed)', function (): void {
+    (new Permit2Scheme())->replayKey(new PaymentSignature(
+        scheme: 'exact',
+        network: 'eip155:8453',
+        payload: ['signature' => '0xdeadbeef'],
+    ));
+})->throws(InvalidPaymentException::class);

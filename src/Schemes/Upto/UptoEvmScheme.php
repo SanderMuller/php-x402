@@ -10,6 +10,7 @@ use X402\Protocol\PaymentRequired;
 use X402\Protocol\PaymentSignature;
 use X402\Schemes\Evm\Constants;
 use X402\Schemes\Evm\NetworkRegistry;
+use X402\Schemes\ReplayKeyExtractor;
 use X402\Schemes\SchemeContract;
 use X402\Support\JsonReader;
 
@@ -33,7 +34,7 @@ use X402\Support\JsonReader;
  *
  * The signing path lives in `UptoHasher` + `UptoSigner`.
  */
-final class UptoEvmScheme implements SchemeContract
+final class UptoEvmScheme implements ReplayKeyExtractor, SchemeContract
 {
     public const NAME = 'upto';
 
@@ -134,6 +135,24 @@ final class UptoEvmScheme implements SchemeContract
                 'upto deadline has expired.',
             );
         }
+    }
+
+    /**
+     * @return array{from: string, nonce: string, expiresAt: int}
+     */
+    public function replayKey(PaymentSignature $signature): array
+    {
+        // Mirror verifyShape exactly — JsonReader::string coerces
+        // numeric JSON values to string. stringOrNull would let a
+        // numeric `nonce: 123` pass shape validation but produce a
+        // null replay key, silently skipping the in-process claim.
+        $auth = JsonReader::array($signature->payload, 'uptoAuthorization', 'upto payload');
+
+        return [
+            'from' => JsonReader::string($auth, 'from', 'upto authorization'),
+            'nonce' => JsonReader::string($auth, 'nonce', 'upto authorization'),
+            'expiresAt' => JsonReader::int($auth, 'deadline', context: 'upto authorization'),
+        ];
     }
 
     private function compareAmount(string $a, string $b): int

@@ -32,6 +32,7 @@
 /SECURITY.md            export-ignore
 /testbench.yaml         export-ignore
 /tests                  export-ignore
+/UPGRADING.md           export-ignore
 /workbench              export-ignore
 
 # >>> package-boost (managed) >>>

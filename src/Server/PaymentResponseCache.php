@@ -10,10 +10,15 @@ use Psr\Http\Message\ServerRequestInterface;
 use Psr\Http\Message\StreamFactoryInterface;
 use Psr\Http\Server\MiddlewareInterface;
 use Psr\Http\Server\RequestHandlerInterface;
+use Psr\Log\LoggerInterface;
+use Psr\Log\NullLogger;
 use Psr\SimpleCache\CacheInterface;
 use Throwable;
+use X402\Exceptions\InvalidPaymentException;
 use X402\Protocol\PaymentSignature;
 use X402\Protocol\Version;
+use X402\Schemes\ReplayKeyExtractor;
+use X402\Schemes\SchemeContract;
 use X402\Support\JsonReader;
 
 /**
@@ -47,14 +52,116 @@ use X402\Support\JsonReader;
  */
 final readonly class PaymentResponseCache implements MiddlewareInterface
 {
+    /**
+     * Default response headers retained in the cached snapshot. Anything
+     * not on this list — most importantly `Set-Cookie` and `Authorization`
+     * — is dropped so a stolen `X-PAYMENT` header replayed against this
+     * cache cannot leak the original buyer's session cookies / bearer
+     * tokens to the replayer.
+     *
+     * Header names are compared case-insensitively.
+     */
+    public const DEFAULT_RESPONSE_HEADER_ALLOWLIST = [
+        // Representation-invariant body-shape headers.
+        'Content-Type',
+        'Content-Language',
+        'Content-Length',
+        'Content-Disposition',
+        // Cache-coordination headers.
+        'Cache-Control',
+        'ETag',
+        'Last-Modified',
+        // 201 Created on paid POST flows. URL is not user-tied state.
+        'Location',
+        // v1 + v2 settlement receipts — the response is meaningless
+        // without these, so they're always retained.
+        'X-PAYMENT-RESPONSE',
+        'PAYMENT-RESPONSE',
+    ];
+
+    /**
+     * Response headers that signal the response is variant-specific
+     * (content negotiation, range request, encoding). Caching these
+     * would replay the wrong representation to a retry with different
+     * negotiation inputs (e.g. gzip body served to a client that
+     * didn't request gzip), and the cache key only binds the signed
+     * authorization — not request `Range` / `Accept-Encoding` / etc.
+     *
+     * `shouldCache()` skips caching when any of these are present.
+     * The allow-list does not include them either; the two layers are
+     * belt-and-suspenders.
+     */
+    private const VARIANT_HEADERS = [
+        'content-encoding',
+        'content-range',
+        'accept-ranges',
+        'vary',
+    ];
+
+    /**
+     * Headers that are NEVER stored in the snapshot regardless of the
+     * configured allow-list. These carry user-tied state that, if
+     * replayed against another viewer of the same `X-PAYMENT` header,
+     * hands them a session under the original buyer's identity.
+     */
+    private const HARD_BLOCKED_HEADERS = [
+        'set-cookie',
+        'authorization',
+        'proxy-authorization',
+        'www-authenticate',
+        'cookie',
+    ];
+
+    private LoggerInterface $logger;
+
+    /** @var array<string, ReplayKeyExtractor> */
+    private array $extractors;
+
+    /** @var list<string> */
+    private array $allowedHeadersLower;
+
+    /**
+     * @param  array<string, SchemeContract>  $schemes  Same map you wire into PaymentEnforcer. Entries that implement `ReplayKeyExtractor` (Evm `ExactScheme` / `Permit2Scheme`, `UptoEvmScheme`) get cache keying. Entries that don't (`Erc7710Scheme`, Stellar / Svm `ExactScheme`) are kept out of the internal extractor map so requests routed to them simply fall through to the inner handler with a `debug` log line — passing the full enforcer map is the supported path.
+     * @param  list<string>  $responseHeadersAllowList  Response header names retained in the cached snapshot. Compared case-insensitively. Override the default to keep app-specific headers (e.g. CORS); the hard-block list (`set-cookie`, `authorization`, …) is enforced regardless.
+     */
     public function __construct(
         private CacheInterface $cache,
         private ResponseFactoryInterface $responseFactory,
         private StreamFactoryInterface $streamFactory,
+        array $schemes,
         private Version $version = Version::V1,
         private int $ttl = 3600,
         private string $prefix = 'x402:idem:',
-    ) {}
+        ?LoggerInterface $logger = null,
+        array $responseHeadersAllowList = self::DEFAULT_RESPONSE_HEADER_ALLOWLIST,
+    ) {
+        // Filter to ReplayKeyExtractors silently. Adopters typically
+        // pass the same map they wire into PaymentEnforcer, which can
+        // legitimately include non-RKE schemes (Erc7710, Stellar, Svm)
+        // that defer replay protection to the facilitator. Throwing
+        // would force callers to maintain a separate filtered map and
+        // re-introduce drift between the two middlewares — exactly
+        // what consolidating the map was meant to prevent.
+        $extractors = [];
+        foreach ($schemes as $name => $scheme) {
+            if ($scheme instanceof ReplayKeyExtractor) {
+                $extractors[$name] = $scheme;
+            }
+        }
+
+        $this->extractors = $extractors;
+
+        // Normalize the allow-list to lowercase once so per-request
+        // filtering is a hash lookup. Strip any caller-supplied entry
+        // that overlaps the hard-block set so the hard-block can never
+        // be opted out of.
+        $this->allowedHeadersLower = array_values(array_diff(
+            array_unique(array_map(strtolower(...), $responseHeadersAllowList)),
+            self::HARD_BLOCKED_HEADERS,
+        ));
+
+        $this->logger = $logger ?? new NullLogger();
+    }
 
     /**
      * Attribute name under which `PaymentResponseCache` stashes the
@@ -112,13 +219,61 @@ final readonly class PaymentResponseCache implements MiddlewareInterface
             return null;
         }
 
-        $auth = $signature->authorization();
+        // Use the scheme's own replay-key extractor — same source of
+        // truth as PaymentEnforcer's nonce claim. Without this, schemes
+        // whose payload uses non-`authorization` keys (Permit2 / Upto)
+        // would have their nonces burned by the enforcer but no cache
+        // entry to recover from on a dropped-response retry.
+        // Constructor guaranteed every entry in $schemes is a
+        // ReplayKeyExtractor; the only "scheme not handled" case at
+        // request time is an unknown scheme name from public traffic.
+        // Skip-cache paths are emitted at `debug` (not `warning`)
+        // because this middleware sits on the unauthenticated edge and
+        // any caller can send a payment header with an unknown scheme
+        // — warning-level logs would be public-traffic-spoofable and
+        // drown out the real drift signal.
+        $scheme = $this->extractors[$signature->scheme] ?? null;
+        if (! $scheme instanceof ReplayKeyExtractor) {
+            $this->logger->debug('x402: response cache cannot derive replay key — scheme not registered; idempotent retry disabled for this request', [
+                'scheme' => $signature->scheme,
+                'network' => $signature->network,
+                'registered' => array_keys($this->extractors),
+            ]);
 
-        if ($auth === null) {
             return null;
         }
 
-        ['from' => $from, 'nonce' => $nonce] = $auth;
+        try {
+            $replayKey = $scheme->replayKey($signature);
+        } catch (InvalidPaymentException $invalidPaymentException) {
+            // Caller-side validation failure — bad public input or
+            // extractor/payload skew (operator wired ExactScheme here
+            // while PaymentEnforcer has Permit2Scheme under the same
+            // scheme key). PaymentEnforcer will produce the actual 400.
+            // Other exception types (LogicError, RuntimeException, …)
+            // intentionally bubble up — those are extractor bugs that
+            // should NOT masquerade as harmless cache skips.
+            $this->logger->debug('x402: response cache extractor rejected payload — possible scheme/extractor drift or malformed input', [
+                'scheme' => $signature->scheme,
+                'network' => $signature->network,
+                'extractor' => $scheme::class,
+                'reason' => $invalidPaymentException->getMessage(),
+            ]);
+
+            return null;
+        }
+
+        if ($replayKey === null) {
+            // Scheme implements ReplayKeyExtractor but signalled
+            // "no replay key" for this signature.
+            $this->logger->debug('x402: response cache extractor returned null — replay key not derivable; idempotent retry disabled for this request', [
+                'scheme' => $signature->scheme,
+                'network' => $signature->network,
+                'extractor' => $scheme::class,
+            ]);
+
+            return null;
+        }
 
         // Critical: the key MUST include the raw header bytes, not just
         // the (network, from, nonce) tuple. `from` and `nonce` become
@@ -129,7 +284,7 @@ final readonly class PaymentResponseCache implements MiddlewareInterface
         // to the actual signed authorization bytes.
         $key = $this->prefix . hash(
             'sha256',
-            $signature->network . '|' . strtolower($from) . '|' . strtolower($nonce) . '|' . $headerLine,
+            $signature->network . '|' . strtolower($replayKey['from']) . '|' . strtolower($replayKey['nonce']) . '|' . $headerLine,
         );
 
         return ['key' => $key, 'signature' => $signature];
@@ -140,15 +295,38 @@ final readonly class PaymentResponseCache implements MiddlewareInterface
      * rebuild a response. A poisoned / partially-corrupted cache entry
      * falls through to the handler instead of replaying garbage.
      *
+     * Also rejects pre-0.3.0 snapshots that carry status 206 or any
+     * variant-specific header — `shouldCache()` blocks new writes for
+     * those, but persistent PSR-16 stores can still hold older entries
+     * after upgrade. Failing closed on the read path closes that
+     * window without requiring a manual cache purge.
+     *
      * @param  array<array-key, mixed>  $cached
      */
     private function isValidSnapshot(array $cached): bool
     {
-        return isset($cached['status'], $cached['body'])
-            && is_int($cached['status'])
-            && $cached['status'] >= 100
-            && $cached['status'] < 600
-            && is_string($cached['body']);
+        if (! isset($cached['status'], $cached['body'])
+            || ! is_int($cached['status'])
+            || $cached['status'] < 100
+            || $cached['status'] >= 600
+            || ! is_string($cached['body'])) {
+            return false;
+        }
+
+        if ($cached['status'] === 206) {
+            return false;
+        }
+
+        $headers = $cached['headers'] ?? [];
+        if (is_array($headers)) {
+            foreach (array_keys($headers) as $name) {
+                if (is_string($name) && in_array(strtolower($name), self::VARIANT_HEADERS, strict: true)) {
+                    return false;
+                }
+            }
+        }
+
+        return true;
     }
 
     private function shouldCache(ResponseInterface $response): bool
@@ -157,9 +335,28 @@ final readonly class PaymentResponseCache implements MiddlewareInterface
 
         // Only cache successful paid responses. 402 / 4xx must re-prompt
         // for payment on retry. 5xx is also not cached — the next
-        // attempt deserves a fresh try at the inner handler.
-        if ($status < 200 || $status >= 300) {
+        // attempt deserves a fresh try at the inner handler. 206 Partial
+        // Content is rejected because the cache key doesn't bind the
+        // request `Range`; replaying a 206 to a full-body retry would
+        // serve a partial response.
+        if ($status < 200 || $status >= 300 || $status === 206) {
             return false;
+        }
+
+        // Reject variant-specific representations. The cache key binds
+        // the signed authorization but not request `Range` /
+        // `Accept-Encoding` / Vary inputs, so replaying a gzipped
+        // response to a non-gzip-capable retry, or a French
+        // representation to an English retry, would corrupt the
+        // dropped-response recovery guarantee.
+        foreach (array_keys($response->getHeaders()) as $name) {
+            if (! is_string($name)) {
+                continue;
+            }
+
+            if (in_array(strtolower($name), self::VARIANT_HEADERS, strict: true)) {
+                return false;
+            }
         }
 
         // The PAYMENT-RESPONSE receipt is the proof that this 2xx came
@@ -179,10 +376,28 @@ final readonly class PaymentResponseCache implements MiddlewareInterface
     {
         $body = (string) $response->getBody();
 
+        // Filter at write time so the stored snapshot is already lean.
+        // Read-path filtering (rebuild()) ALSO enforces the hard-block
+        // for two reasons: (a) snapshots written by older versions of
+        // this class may still be in a persistent PSR-16 store after
+        // the upgrade, and (b) the hard-block list itself may grow in
+        // future releases — applying at both ends keeps stale entries
+        // from re-leaking sensitive headers.
+        $filtered = [];
+        foreach ($response->getHeaders() as $name => $values) {
+            if (! is_string($name)) {
+                continue;
+            }
+
+            if (in_array(strtolower($name), $this->allowedHeadersLower, strict: true)) {
+                $filtered[$name] = $values;
+            }
+        }
+
         return [
             'status' => $response->getStatusCode(),
             'reason' => $response->getReasonPhrase(),
-            'headers' => $response->getHeaders(),
+            'headers' => $filtered,
             'body' => $body,
         ];
     }
@@ -203,6 +418,15 @@ final readonly class PaymentResponseCache implements MiddlewareInterface
 
         foreach ($headers as $name => $values) {
             if (! is_string($name)) {
+                continue;
+            }
+
+            // Hard-block on the read path too. Snapshots written by
+            // pre-0.3.0 versions (or by a future version with a wider
+            // hard-block) may carry Set-Cookie / Authorization / etc.;
+            // strip them on rebuild so an upgrade closes the leak
+            // window immediately rather than waiting for cache TTL.
+            if (in_array(strtolower($name), self::HARD_BLOCKED_HEADERS, strict: true)) {
                 continue;
             }
 

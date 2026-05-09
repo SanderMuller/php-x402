@@ -25,6 +25,7 @@ use X402\Replay\InMemoryNonceStore;
 use X402\Replay\NonceStoreContract;
 use X402\Schemes\Evm\Constants;
 use X402\Schemes\Evm\ExactScheme;
+use X402\Schemes\ReplayKeyExtractor;
 use X402\Schemes\SchemeContract;
 
 /**
@@ -144,7 +145,7 @@ final readonly class PaymentEnforcer implements MiddlewareInterface
             $challenge = $this->matchChallenge($signature, $challenges);
             $scheme = $this->schemeFor($signature->scheme);
             $scheme->verifyShape($signature, $challenge);
-            $this->guardReplay($signature, $challenge);
+            $this->guardReplay($scheme, $signature, $challenge);
         } catch (InvalidPaymentException $invalidPaymentException) {
             $this->logger->warning('x402: invalid payment payload', ['reason' => $invalidPaymentException->getMessage()]);
 
@@ -320,57 +321,53 @@ final readonly class PaymentEnforcer implements MiddlewareInterface
         return $this->schemes[$name];
     }
 
-    private function guardReplay(PaymentSignature $signature, PaymentRequired $challenge): void
+    private function guardReplay(SchemeContract $scheme, PaymentSignature $signature, PaymentRequired $challenge): void
     {
-        // In-process replay claiming uses the EIP-3009
-        // `payload.authorization` shape only. Gate on the *challenge*
-        // (server-controlled, attacker cannot manipulate) rather than
-        // on signature payload keys (caller can inject a fake
-        // `authorization` block alongside Permit2/Upto fields and
-        // redirect the claim onto attacker-chosen (from, nonce)).
-        //
-        // Schemes routed through facilitator nonce uniqueness only:
-        //   - Permit2/Upto/Erc7710 (challenge declares assetTransferMethod)
-        //   - Stellar / Svm "exact" (non-EVM network family)
-        //   - any future scheme that does not carry `payload.authorization`
-        // Mirror ExactScheme::verifyShape — a non-string
-        // `extra.assetTransferMethod` is normalized to the EIP-3009
-        // default and ExactScheme will still settle the signature. The
-        // replay gate must normalize identically or a malformed
-        // challenge could pass settlement while skipping the in-process
-        // claim.
-        $rawMethod = $challenge->extra['assetTransferMethod'] ?? null;
-        $declaredMethod = is_string($rawMethod) ? $rawMethod : Constants::TRANSFER_METHOD_EIP3009;
-        $isEip3009Evm = $signature->scheme === ExactScheme::NAME
-            && str_starts_with($signature->network, 'eip155:')
-            && $declaredMethod === Constants::TRANSFER_METHOD_EIP3009;
+        // Preferred path — schemes opt into in-process replay claiming
+        // by implementing `ReplayKeyExtractor`. Each scheme reads only
+        // payload fields it validates in `verifyShape`, so a caller
+        // cannot inject extra payload keys to redirect the claim.
+        $key = $scheme instanceof ReplayKeyExtractor ? $scheme->replayKey($signature) : null;
 
-        if (! $isEip3009Evm) {
-            $this->logger->debug('x402: skipping in-process replay claim — not the EIP-3009 exact-EVM path', [
+        // Backwards-compat fallback for custom `SchemeContract`
+        // implementations that haven't migrated to `ReplayKeyExtractor`
+        // yet but still validate an EIP-3009-shaped `payload.authorization`
+        // (the only path 0.2.x protected). Gate on the *challenge*
+        // (server-controlled) so a caller can't bypass by manipulating
+        // payload keys: scheme="exact" + network=eip155:* +
+        // assetTransferMethod=eip3009 (default), with normalization
+        // matching ExactScheme::verifyShape.
+        if ($key === null && ! $scheme instanceof ReplayKeyExtractor) {
+            $rawMethod = $challenge->extra['assetTransferMethod'] ?? null;
+            $declaredMethod = is_string($rawMethod) ? $rawMethod : Constants::TRANSFER_METHOD_EIP3009;
+            $isLegacyEip3009Evm = $signature->scheme === ExactScheme::NAME
+                && str_starts_with($signature->network, 'eip155:')
+                && $declaredMethod === Constants::TRANSFER_METHOD_EIP3009;
+
+            if ($isLegacyEip3009Evm) {
+                $auth = $signature->authorization();
+                if ($auth !== null) {
+                    $key = [
+                        'from' => $auth['from'],
+                        'nonce' => $auth['nonce'],
+                        'expiresAt' => $auth['validBefore'],
+                    ];
+                }
+            }
+        }
+
+        if ($key === null) {
+            $this->logger->debug('x402: no replay key for scheme — deferring to facilitator', [
                 'scheme' => $signature->scheme,
                 'network' => $signature->network,
-                'transferMethod' => $declaredMethod,
             ]);
 
             return;
         }
 
-        $auth = $signature->authorization();
+        $ttl = max(60, $key['expiresAt'] - time() + 30);
 
-        // ExactScheme::verifyShape already rejects empty from/nonce
-        // upstream; a null here would only fire if a future change to
-        // ExactScheme drops that guarantee, or a custom scheme is wired
-        // under name "exact" with a non-EIP-3009 payload shape.
-        if ($auth === null) {
-            throw InvalidPaymentException::with(
-                ErrorReason::InvalidPayload,
-                'Exact-EVM payload missing authorization from/nonce.',
-            );
-        }
-
-        $ttl = max(60, $auth['validBefore'] - time() + 30);
-
-        if (! $this->nonceStore->claim($signature->network, $auth['from'], $auth['nonce'], $ttl)) {
+        if (! $this->nonceStore->claim($signature->network, $key['from'], $key['nonce'], $ttl)) {
             throw InvalidPaymentException::with(
                 ErrorReason::ReplayAttempt,
                 'Nonce already used (replay attempt).',

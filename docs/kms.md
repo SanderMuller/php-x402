@@ -19,15 +19,18 @@ interface Wallet
 
 The signer takes a 32-byte EIP-712 digest (already hashed by
 `Eip712Hasher::digest()`) and returns a 65-byte `r || s || v` signature.
-`v` is the **recovery id**, always `27` or `28` (equivalent to `0` or
-`1` shifted by 27).
+`v` is the **recovery id**. Emit `27` or `28` for compatibility with
+every Ethereum tool that consumes the signature (`SignatureVerifier`
+also accepts the raw recovery id `0` or `1`, but most downstream
+consumers expect `27`/`28`).
 
 > [!IMPORTANT]
 > Do **not** use the EIP-155 transaction-style `v = 27 + chainId * 2 + 35`
 > here. That form is for raw transaction signing, not EIP-712 typed
-> data. The x402 verifier (`SignatureVerifier`) accepts only `27/28`
-> (or `0/1`); EIP-155-shaped values produce signatures the rest of
-> this library treats as invalid.
+> data. `SignatureVerifier` accepts only `{0, 1, 27, 28}` and fails
+> fast on any other value — EIP-155-shaped `v` (29, 30, 4393, …)
+> trips an `Invalid signature v byte` error before public-key
+> recovery runs.
 
 Three rules every KMS adapter must follow:
 

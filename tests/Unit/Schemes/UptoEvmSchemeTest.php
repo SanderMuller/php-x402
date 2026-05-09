@@ -108,3 +108,25 @@ it('rejects non-numeric validAfter', function (): void {
         uptoChallenge(),
     );
 })->throws(InvalidPaymentException::class, 'int');
+
+it('exposes replayKey from payload.uptoAuthorization', function (): void {
+    $key = (new UptoEvmScheme())->replayKey(uptoSignature([
+        'from' => '0xFROM',
+        'nonce' => '0xNONCE',
+        'deadline' => 9999999999,
+    ]));
+
+    expect($key)->toBe([
+        'from' => '0xFROM',
+        'nonce' => '0xNONCE',
+        'expiresAt' => 9999999999,
+    ]);
+});
+
+it('coerces numeric nonce in replayKey (mirrors verifyShape)', function (): void {
+    $key = (new UptoEvmScheme())->replayKey(uptoSignature([
+        'nonce' => 7,
+    ]));
+
+    expect($key['nonce'])->toBe('7');
+});

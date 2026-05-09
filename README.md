@@ -116,7 +116,7 @@ use X402\Server\PaymentResponseCache;
 
 // Pipeline: PaymentResponseCache → PaymentEnforcer → handler
 $pipeline = [
-    new PaymentResponseCache($psr16Cache, $psr17, ttl: 3600),
+    new PaymentResponseCache($psr16Cache, $psr17, $psr17, schemes: ['exact' => new ExactScheme()], ttl: 3600),
     $enforcer,
 ];
 ```

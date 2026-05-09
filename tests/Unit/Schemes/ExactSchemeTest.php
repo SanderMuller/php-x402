@@ -103,3 +103,43 @@ it('rejects expired authorization', function (): void {
         challenge(),
     );
 })->throws(InvalidPaymentException::class, 'expired');
+
+it('exposes replayKey from payload.authorization', function (): void {
+    $key = (new ExactScheme())->replayKey(signature([
+        'from' => '0xFROM',
+        'nonce' => '0xNONCE',
+        'validBefore' => 9999999999,
+    ]));
+
+    expect($key)->toBe([
+        'from' => '0xFROM',
+        'nonce' => '0xNONCE',
+        'expiresAt' => 9999999999,
+    ]);
+});
+
+it('coerces numeric nonce in replayKey (mirrors verifyShape — no silent claim skip)', function (): void {
+    $key = (new ExactScheme())->replayKey(new PaymentSignature(
+        scheme: 'exact',
+        network: 'eip155:8453',
+        payload: ['signature' => '0xdeadbeef', 'authorization' => [
+            'from' => '0xfrom',
+            'nonce' => 12345, // numeric JSON
+            'validBefore' => 9999999999,
+        ]],
+    ));
+
+    expect($key)->toBe([
+        'from' => '0xfrom',
+        'nonce' => '12345',
+        'expiresAt' => 9999999999,
+    ]);
+});
+
+it('throws on missing authorization field in replayKey (fail-closed)', function (): void {
+    (new ExactScheme())->replayKey(new PaymentSignature(
+        scheme: 'exact',
+        network: 'eip155:8453',
+        payload: ['signature' => '0xdeadbeef'], // no authorization at all
+    ));
+})->throws(InvalidPaymentException::class);

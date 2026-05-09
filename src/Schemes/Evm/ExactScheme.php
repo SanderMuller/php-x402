@@ -8,6 +8,7 @@ use X402\Errors\ErrorReason;
 use X402\Exceptions\InvalidPaymentException;
 use X402\Protocol\PaymentRequired;
 use X402\Protocol\PaymentSignature;
+use X402\Schemes\ReplayKeyExtractor;
 use X402\Schemes\SchemeContract;
 use X402\Support\JsonReader;
 
@@ -16,7 +17,7 @@ use X402\Support\JsonReader;
  *
  * Reference: https://github.com/coinbase/x402/blob/main/specs/schemes/exact/scheme_exact_evm.md
  */
-final readonly class ExactScheme implements SchemeContract
+final readonly class ExactScheme implements ReplayKeyExtractor, SchemeContract
 {
     public const NAME = 'exact';
 
@@ -109,6 +110,25 @@ final readonly class ExactScheme implements SchemeContract
                 'Authorization has expired (validBefore <= now).',
             );
         }
+    }
+
+    /**
+     * @return array{from: string, nonce: string, expiresAt: int}
+     */
+    public function replayKey(PaymentSignature $signature): array
+    {
+        // Use JsonReader::string (coerces numeric JSON values to string)
+        // to mirror verifyShape exactly — a numeric `nonce: 123` passes
+        // verifyShape, so it must also produce a non-null replay key
+        // here, otherwise the in-process claim would be silently
+        // skipped while settlement still happens.
+        $auth = JsonReader::array($signature->payload, 'authorization', 'EVM exact payload');
+
+        return [
+            'from' => JsonReader::string($auth, 'from', 'EIP-3009 authorization'),
+            'nonce' => JsonReader::string($auth, 'nonce', 'EIP-3009 authorization'),
+            'expiresAt' => JsonReader::int($auth, 'validBefore', context: 'EIP-3009 authorization'),
+        ];
     }
 
     /**

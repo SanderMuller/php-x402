@@ -8,6 +8,7 @@ use X402\Errors\ErrorReason;
 use X402\Exceptions\InvalidPaymentException;
 use X402\Protocol\PaymentRequired;
 use X402\Protocol\PaymentSignature;
+use X402\Schemes\ReplayKeyExtractor;
 use X402\Schemes\SchemeContract;
 use X402\Support\JsonReader;
 
@@ -34,7 +35,7 @@ use X402\Support\JsonReader;
  * The signing path lives in `Permit2Hasher`; client wallets sign the
  * resulting digest with their EOA / smart-wallet signer.
  */
-final class Permit2Scheme implements SchemeContract
+final class Permit2Scheme implements ReplayKeyExtractor, SchemeContract
 {
     public const NAME = 'exact';
 
@@ -139,6 +140,24 @@ final class Permit2Scheme implements SchemeContract
                 'Permit2 deadline has expired.',
             );
         }
+    }
+
+    /**
+     * @return array{from: string, nonce: string, expiresAt: int}
+     */
+    public function replayKey(PaymentSignature $signature): array
+    {
+        // Mirror verifyShape exactly: JsonReader::string coerces numeric
+        // JSON values to string. Using stringOrNull instead would let
+        // a numeric `nonce: 123` pass verifyShape but produce a null
+        // replay key, silently skipping the in-process claim.
+        $auth = JsonReader::array($signature->payload, 'permit2Authorization', 'Permit2 payload');
+
+        return [
+            'from' => JsonReader::string($auth, 'from', 'Permit2 authorization'),
+            'nonce' => JsonReader::string($auth, 'nonce', 'Permit2 authorization'),
+            'expiresAt' => JsonReader::int($auth, 'deadline', context: 'Permit2 authorization'),
+        ];
     }
 
     /**
