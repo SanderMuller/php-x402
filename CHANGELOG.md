@@ -5,6 +5,37 @@ All notable changes to `php-x402` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.3.0 - 2026-05-09
+
+### What's new
+
+- **`X402\Schemes\ReplayKeyExtractor`** — optional capability interface schemes opt into to surface their `(from, nonce, expiresAt)` triple for in-process nonce claiming. Built-in `Evm\ExactScheme`, `Evm\Permit2Scheme`, and `Upto\UptoEvmScheme` implement it; their `replayKey()` mirrors `verifyShape()` exactly (uses `JsonReader::string()`'s numeric→string coercion, so a numeric JSON `nonce: 123` no longer silently skips the in-process claim while still settling). `PaymentEnforcer::guardReplay()` checks `instanceof` and routes per-scheme, so a Permit2 caller cannot inject a forged top-level `authorization` block to redirect the claim onto attacker-chosen `(from, nonce)` — each scheme reads only the payload fields it itself validates. `Erc7710Scheme`, Stellar / Svm `ExactScheme` don't implement the interface and defer replay protection to the facilitator's on-chain nonce check, same as before.
+- **`X402\Replay\CallbackNonceStore`** — closure-injected adapter for any Redis-compatible client that implements `SET key value NX EX ttl` semantics. Dep-free; works with phpredis, Predis, or hand-rolled clients. Fills the production gap left by `Psr16NonceStore`, which cannot satisfy the `NonceStoreContract` atomicity claim because PSR-16 has no add-if-absent primitive (see 0.2.1 notes for the underlying race).
+  ```php
+  $redis = new \Redis();
+  $store = new CallbackNonceStore(
+      static fn (string $key, int $ttl): bool
+          => (bool) $redis->set($key, '1', ['NX', 'EX' => $ttl]),
+  );
+  
+  ```
+- **`PaymentResponseCache` response-header allow-list + hard-block.** Cached snapshots no longer include `Set-Cookie`, `Authorization`, `Proxy-Authorization`, `Www-Authenticate`, or `Cookie` regardless of caller-supplied allow-list — these would otherwise let a stolen `X-PAYMENT` header replayer inherit the original buyer's session. Hard-block runs on the read path too, so any pre-0.3.0 snapshots in your persistent PSR-16 store get sanitised on first hit after upgrade. Default allow-list (`Content-Type`, `Content-Language`, `Content-Length`, `Content-Disposition`, `Cache-Control`, `ETag`, `Last-Modified`, `Location`, `X-PAYMENT-RESPONSE`, `PAYMENT-RESPONSE`) is overrideable via the new `responseHeadersAllowList` constructor arg; the hard-block list is enforced regardless.
+
+### Bug fixes
+
+- **`PaymentResponseCache` was EIP-3009-only on the cache-key path.** It derived its key from `PaymentSignature::authorization()` (which only reads `payload.authorization`), so Permit2 and Upto signatures had their nonces burned by `PaymentEnforcer` but no matching cache entry — a dropped-response retry on those schemes would 402 as a replay. Same gap on numeric JSON `nonce` values for the EIP-3009 path because `stringOrNull()` doesn't coerce. The cache now uses the same `ReplayKeyExtractor` path as the enforcer, so Permit2 / Upto / numeric-nonce all key correctly.
+- **`PaymentResponseCache` no longer caches variant-specific responses.** Status `206 Partial Content` and responses carrying `Content-Encoding`, `Content-Range`, `Accept-Ranges`, or `Vary` are skipped at write time. The cache key binds the signed authorization but not request `Range` / `Accept-Encoding` / negotiation inputs, so replaying a gzipped response to a non-gzip retry, or a partial-content snapshot to a full-body retry, would corrupt the dropped-response recovery guarantee. `isValidSnapshot()` rejects pre-0.3.0 entries carrying these headers/status on the read path too.
+
+### Notes
+
+- **BREAKING:** `PaymentResponseCache::__construct()` now takes a `$schemes: array<string, SchemeContract>` argument (same map you wire into `PaymentEnforcer`). Pass the full enforcer map — non-`ReplayKeyExtractor` entries are filtered out internally so mixed deployments keep working without a separate map. Adopters using named arguments only need to add `schemes:`; positional callers need to re-order. See `UPGRADING.md` for diffs.
+- **BC fallback retained for custom schemes.** Custom `SchemeContract` implementations that haven't migrated to `ReplayKeyExtractor` but still validate an EIP-3009-shaped `payload.authorization` keep their 0.2.x in-process replay protection via a server-controlled fallback gate (challenge `assetTransferMethod=eip3009` + `eip155:*` network). Schemes that genuinely defer to the facilitator are unaffected.
+- **Drift signals at debug, not warning.** `PaymentResponseCache` emits `debug`-level log lines when a payment header arrives for a scheme it can't extract a key for. The cache sits on the unauthenticated edge — warning-level would be public-traffic-spoofable and drown out the real drift signal. Operators detect cache/enforcer drift by enabling debug logging temporarily.
+- **Twenty-nine new tests** covering scheme `replayKey` extraction (numeric-nonce coercion, missing-field fail-closed, forged-payload-key isolation), non-EIP-3009 paths skipping cache, `CallbackNonceStore` semantics, response-header allow-list + hard-block on both write and read, mixed scheme map acceptance, variant-response skip, stale snapshot sanitisation, BC fallback for legacy custom EIP-3009 schemes.
+- `docs/kms.md` clarified — `SignatureVerifier` accepts `{0, 1, 27, 28}` and rejects EIP-155 chainId-offset values fast (no behavior change vs 0.2.1; doc was less precise).
+
+**Full Changelog**: https://github.com/SanderMuller/php-x402/compare/0.2.1...0.3.0
+
 ## 0.2.1 - 2026-05-09
 
 Security/correctness patch. Closes a replay-protection bypass on the EIP-3009 path, tightens signature `v`-byte validation against silent hex coercion, and fixes a misleading production recommendation around `Psr16NonceStore`. Tests pass on the CI matrix (PHP 8.2 / 8.3 / 8.4 × prefer-stable / prefer-lowest).
