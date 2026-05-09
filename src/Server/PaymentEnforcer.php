@@ -23,6 +23,7 @@ use X402\Protocol\PaymentSignature;
 use X402\Protocol\Version;
 use X402\Replay\InMemoryNonceStore;
 use X402\Replay\NonceStoreContract;
+use X402\Schemes\Evm\Constants;
 use X402\Schemes\Evm\ExactScheme;
 use X402\Schemes\SchemeContract;
 
@@ -87,7 +88,9 @@ final readonly class PaymentEnforcer implements MiddlewareInterface
      * only; multi-worker deployments accept the same `(network, from,
      * nonce)` on different workers, breaking replay protection — a
      * paying user can be billed multiple times. Production hosts use
-     * the explicit constructor with a Redis-backed `Psr16NonceStore`.
+     * the explicit constructor with an atomic nonce store (e.g.
+     * `LaravelNonceStore` from laravel-x402, or a Redis `SETNX EX`
+     * adapter implementing `NonceStoreContract`).
      *
      * @param  ResponseFactoryInterface&StreamFactoryInterface  $factory  PSR-17 impl that fulfils both contracts (e.g. `nyholm/psr7`).
      */
@@ -141,7 +144,7 @@ final readonly class PaymentEnforcer implements MiddlewareInterface
             $challenge = $this->matchChallenge($signature, $challenges);
             $scheme = $this->schemeFor($signature->scheme);
             $scheme->verifyShape($signature, $challenge);
-            $this->guardReplay($signature);
+            $this->guardReplay($signature, $challenge);
         } catch (InvalidPaymentException $invalidPaymentException) {
             $this->logger->warning('x402: invalid payment payload', ['reason' => $invalidPaymentException->getMessage()]);
 
@@ -317,9 +320,54 @@ final readonly class PaymentEnforcer implements MiddlewareInterface
         return $this->schemes[$name];
     }
 
-    private function guardReplay(PaymentSignature $signature): void
+    private function guardReplay(PaymentSignature $signature, PaymentRequired $challenge): void
     {
-        $auth = $signature->authorization() ?? ['from' => '', 'nonce' => '', 'validBefore' => 0];
+        // In-process replay claiming uses the EIP-3009
+        // `payload.authorization` shape only. Gate on the *challenge*
+        // (server-controlled, attacker cannot manipulate) rather than
+        // on signature payload keys (caller can inject a fake
+        // `authorization` block alongside Permit2/Upto fields and
+        // redirect the claim onto attacker-chosen (from, nonce)).
+        //
+        // Schemes routed through facilitator nonce uniqueness only:
+        //   - Permit2/Upto/Erc7710 (challenge declares assetTransferMethod)
+        //   - Stellar / Svm "exact" (non-EVM network family)
+        //   - any future scheme that does not carry `payload.authorization`
+        // Mirror ExactScheme::verifyShape — a non-string
+        // `extra.assetTransferMethod` is normalized to the EIP-3009
+        // default and ExactScheme will still settle the signature. The
+        // replay gate must normalize identically or a malformed
+        // challenge could pass settlement while skipping the in-process
+        // claim.
+        $rawMethod = $challenge->extra['assetTransferMethod'] ?? null;
+        $declaredMethod = is_string($rawMethod) ? $rawMethod : Constants::TRANSFER_METHOD_EIP3009;
+        $isEip3009Evm = $signature->scheme === ExactScheme::NAME
+            && str_starts_with($signature->network, 'eip155:')
+            && $declaredMethod === Constants::TRANSFER_METHOD_EIP3009;
+
+        if (! $isEip3009Evm) {
+            $this->logger->debug('x402: skipping in-process replay claim — not the EIP-3009 exact-EVM path', [
+                'scheme' => $signature->scheme,
+                'network' => $signature->network,
+                'transferMethod' => $declaredMethod,
+            ]);
+
+            return;
+        }
+
+        $auth = $signature->authorization();
+
+        // ExactScheme::verifyShape already rejects empty from/nonce
+        // upstream; a null here would only fire if a future change to
+        // ExactScheme drops that guarantee, or a custom scheme is wired
+        // under name "exact" with a non-EIP-3009 payload shape.
+        if ($auth === null) {
+            throw InvalidPaymentException::with(
+                ErrorReason::InvalidPayload,
+                'Exact-EVM payload missing authorization from/nonce.',
+            );
+        }
+
         $ttl = max(60, $auth['validBefore'] - time() + 30);
 
         if (! $this->nonceStore->claim($signature->network, $auth['from'], $auth['nonce'], $ttl)) {

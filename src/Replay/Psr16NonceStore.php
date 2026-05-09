@@ -10,10 +10,17 @@ use Psr\SimpleCache\CacheInterface;
  * PSR-16 (simple-cache) backed nonce store. Pass an Illuminate / Symfony
  * cache adapter to share state across processes.
  *
- * Note — PSR-16 has no atomic "set-if-absent" primitive. This implementation
- * uses get + set, which has a tiny TOCTOU window. For strict correctness
- * under high concurrency, ship a Redis-native adapter (e.g.
- * `LaravelNonceStore` in laravel-x402 uses `Cache::add()` which IS atomic).
+ * **Security-critical** — PSR-16 has no atomic "set-if-absent" primitive,
+ * so `claim()` is implemented as `has() + set()`. Two concurrent requests
+ * carrying the same `(network, from, nonce)` can both observe a cache
+ * miss and both succeed, defeating replay protection for that window.
+ * The window is small but non-zero on every backend.
+ *
+ * Production deployments MUST use a nonce store with atomic
+ * compare-and-set semantics — `LaravelNonceStore` (laravel-x402) uses
+ * `Cache::add()` which is atomic on Redis / Memcached, or wire a
+ * Redis-native `SET key value NX EX ttl` adapter directly. Treat this
+ * class as fit for tests and single-worker dev environments only.
  */
 final readonly class Psr16NonceStore implements NonceStoreContract
 {

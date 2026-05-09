@@ -10,9 +10,11 @@ use Psr\Http\Message\ServerRequestInterface;
 use Psr\Http\Server\RequestHandlerInterface;
 use X402\Facilitator\FacilitatorClient;
 use X402\Protocol\PaymentRequired;
+use X402\Protocol\PaymentSignature;
 use X402\Protocol\Version;
 use X402\Replay\InMemoryNonceStore;
 use X402\Schemes\Evm\ExactScheme;
+use X402\Schemes\SchemeContract;
 use X402\Server\EnforcementPolicy;
 use X402\Server\PaymentEnforcer;
 use X402\Server\ResourceResolver;
@@ -238,6 +240,185 @@ it('builds via PaymentEnforcer::forTesting() with in-process defaults', function
     $response = $enforcer->process(new ServerRequest('GET', '/premium'), new OkHandler());
 
     expect($response->getStatusCode())->toBe(402);
+});
+
+it('still claims the nonce when challenge.extra.assetTransferMethod is non-string (matches ExactScheme normalization)', function (): void {
+    // Regression: a non-string assetTransferMethod is normalized to
+    // eip3009 by ExactScheme::verifyShape (so settlement still happens),
+    // and guardReplay must normalize identically — otherwise a
+    // malformed challenge would pass settlement while bypassing the
+    // in-process replay gate.
+    $challenge = new PaymentRequired(
+        scheme: 'exact',
+        network: 'eip155:8453',
+        amount: '10000',
+        asset: '0xasset',
+        payTo: '0x000000000000000000000000000000000000beef',
+        extra: ['assetTransferMethod' => 42], // non-string — normalizes to default
+    );
+    $priceTable = new StaticPriceTable();
+    $priceTable->set('/premium', $challenge);
+
+    $factory = new Psr17Factory();
+    $store = new InMemoryNonceStore();
+
+    $enforcer = new PaymentEnforcer(
+        priceTable: $priceTable,
+        facilitator: new StubFacilitator(),
+        nonceStore: $store,
+        schemes: ['exact' => new ExactScheme()],
+        responseFactory: $factory,
+        streamFactory: $factory,
+    );
+
+    $request = buildSignedRequest('X-PAYMENT');
+    $payload = json_decode((string) base64_decode($request->getHeaderLine('X-PAYMENT'), true), true);
+    /** @var array{payload: array{authorization: array{from: string, nonce: string}}} $payload */
+    $from = $payload['payload']['authorization']['from'];
+    $nonce = $payload['payload']['authorization']['nonce'];
+
+    $enforcer->process($request, new OkHandler());
+
+    // Slot must be consumed — second claim returns false.
+    expect($store->claim('eip155:8453', $from, $nonce, 60))->toBeFalse();
+});
+
+it('reaches the facilitator on a valid upto-EVM payment without hitting the in-process nonce store', function (): void {
+    // Regression: a previous gate gated only on network=eip155:* +
+    // assetTransferMethod=eip3009 (the default), which made `upto`
+    // EVM signatures (scheme="upto", no transferMethod set) trip the
+    // EIP-3009 path and 400 because their payload uses
+    // `uptoAuthorization` instead of `authorization`.
+    $challenge = new PaymentRequired(
+        scheme: 'upto',
+        network: 'eip155:8453',
+        amount: '10000',
+        asset: '0xasset',
+        payTo: '0x000000000000000000000000000000000000beef',
+    );
+    $priceTable = new StaticPriceTable();
+    $priceTable->set('/premium', $challenge);
+
+    $factory = new Psr17Factory();
+    $store = new InMemoryNonceStore();
+
+    $passthroughUpto = new class implements SchemeContract {
+        public function name(): string
+        {
+            return 'upto';
+        }
+
+        /**
+         * @return list<string>
+         */
+        public function supportedNetworks(): array
+        {
+            return ['eip155:8453'];
+        }
+
+        public function verifyShape(PaymentSignature $signature, PaymentRequired $challenge): void {}
+    };
+
+    $enforcer = new PaymentEnforcer(
+        priceTable: $priceTable,
+        facilitator: new StubFacilitator(),
+        nonceStore: $store,
+        schemes: ['upto' => $passthroughUpto],
+        responseFactory: $factory,
+        streamFactory: $factory,
+    );
+
+    $payload = [
+        'scheme' => 'upto',
+        'network' => 'eip155:8453',
+        'payload' => [
+            'signature' => '0xdeadbeef',
+            'uptoAuthorization' => ['from' => '0xfrom', 'nonce' => '0xnonce'],
+        ],
+    ];
+    $request = (new ServerRequest('GET', '/premium'))
+        ->withHeader('X-PAYMENT', base64_encode((string) json_encode($payload)));
+
+    $response = $enforcer->process($request, new OkHandler());
+
+    expect($response->getStatusCode())->toBe(200);
+});
+
+it('does not claim on payload.authorization when the challenge declares a non-eip3009 transfer method', function (): void {
+    // Regression: a Permit2 / Upto challenge ships `extra.assetTransferMethod`
+    // pointing to a non-EIP-3009 path. A caller who packs both a real
+    // `permit2Authorization` AND a forged top-level `authorization` block
+    // must NOT have the forged (from, nonce) claimed by the in-process
+    // store — that would let the attacker vary the dummy nonce per
+    // request and replay the real Permit2 signature unbounded.
+    $challenge = new PaymentRequired(
+        scheme: 'exact',
+        network: 'eip155:8453',
+        amount: '10000',
+        asset: '0xasset',
+        payTo: '0x000000000000000000000000000000000000beef',
+        extra: ['assetTransferMethod' => 'permit2'],
+    );
+    $priceTable = new StaticPriceTable();
+    $priceTable->set('/premium', $challenge);
+
+    $factory = new Psr17Factory();
+    $store = new InMemoryNonceStore();
+
+    $passthroughScheme = new class implements SchemeContract {
+        public function name(): string
+        {
+            return 'exact';
+        }
+
+        /**
+         * @return list<string>
+         */
+        public function supportedNetworks(): array
+        {
+            return ['eip155:8453'];
+        }
+
+        public function verifyShape(PaymentSignature $signature, PaymentRequired $challenge): void {}
+    };
+
+    $enforcer = new PaymentEnforcer(
+        priceTable: $priceTable,
+        facilitator: new StubFacilitator(),
+        nonceStore: $store,
+        schemes: ['exact' => $passthroughScheme],
+        responseFactory: $factory,
+        streamFactory: $factory,
+    );
+
+    $forgedNonce = '0x' . str_repeat('ab', 32);
+    $payload = [
+        'scheme' => 'exact',
+        'network' => 'eip155:8453',
+        'payload' => [
+            'signature' => '0xdeadbeef',
+            // Real Permit2 path data that the host scheme would validate.
+            'permit2Authorization' => ['real' => 'fields'],
+            // Forged extra block — must be ignored by the replay gate.
+            'authorization' => [
+                'from' => '0xattacker',
+                'to' => '0x000000000000000000000000000000000000beef',
+                'value' => '10000',
+                'validAfter' => time() - 10,
+                'validBefore' => time() + 60,
+                'nonce' => $forgedNonce,
+            ],
+        ],
+    ];
+    $request = (new ServerRequest('GET', '/premium'))
+        ->withHeader('X-PAYMENT', base64_encode((string) json_encode($payload)));
+
+    $enforcer->process($request, new OkHandler());
+
+    // If the enforcer wrongly claimed on the forged authorization, the
+    // store would already have ('eip155:8453', '0xattacker', $forgedNonce).
+    // Verify the slot is still free.
+    expect($store->claim('eip155:8453', '0xattacker', $forgedNonce, 60))->toBeTrue();
 });
 
 it('accepts a ResourceResolver instance and an EnforcementPolicy instance', function (): void {

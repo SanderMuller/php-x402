@@ -50,7 +50,7 @@ $priceTable->set('/premium', new PaymentRequired(
 $middleware = new PaymentEnforcer(
     priceTable:      $priceTable,
     facilitator:     CoinbaseFacilitator::default($psr18Client, $psr17),
-    nonceStore:      new Psr16NonceStore($psr16Cache),   // Redis-backed in prod
+    nonceStore:      $atomicNonceStore,                  // see Replay protection
     schemes:         ['exact' => new ExactScheme()],
     responseFactory: $psr17,
     streamFactory:   $psr17,
@@ -86,7 +86,7 @@ $response = $client->sendRequest($request);     // 402 → sign → retry → 20
 | Facilitator       | `X402\Facilitator\CoinbaseFacilitator`                 |
 | Signing           | `X402\Schemes\Evm\AuthorizationSigner`                 |
 | Verification      | `X402\Schemes\Evm\SignatureVerifier`                   |
-| Replay store      | `X402\Replay\NonceStoreContract` + `Psr16NonceStore`   |
+| Replay store      | `X402\Replay\NonceStoreContract` (atomic SETNX EX in prod) |
 | Testing helpers   | `X402\Testing\PaymentRequiredBuilder`, `StubFacilitator` |
 | CLI               | `bin/x402 decode <header>`                             |
 
@@ -126,7 +126,11 @@ Same Redis-backed PSR-16 store as the nonce store. TTL should comfortably exceed
 ## Replay protection
 
 > [!IMPORTANT]
-> The default `InMemoryNonceStore` is **in-process only**. Multi-worker hosts MUST inject a Redis-backed PSR-16 store via `Psr16NonceStore`, or the Laravel adapter's atomic store. A shared-nothing nonce store breaks replay protection. Treat this as a security-critical contract.
+> Replay protection requires an **atomic** "set-if-absent with TTL" store — Redis `SET key value NX EX ttl` or equivalent. Two concurrent requests carrying the same `(network, from, nonce)` MUST resolve to a single winner; anything else lets a settled signature replay.
+>
+> - `InMemoryNonceStore` — **in-process only**, single worker.
+> - `Psr16NonceStore` — `has() + set()` on PSR-16; **NOT atomic** (PSR-16 has no add-if-absent primitive). Acceptable for tests and single-worker dev only. A small race window allows two workers to both claim the same nonce and both settle.
+> - **Production** — use `LaravelNonceStore` (in [`sandermuller/laravel-x402`](https://github.com/sandermuller/laravel-x402), backed by `Cache::add()`), or implement `NonceStoreContract` against Redis `SETNX EX` directly. Anything else breaks the security contract.
 
 ## Framework adapters
 
