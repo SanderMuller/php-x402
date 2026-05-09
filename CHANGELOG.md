@@ -5,6 +5,18 @@ All notable changes to `php-x402` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.2.1 - 2026-05-09
+
+Security/correctness patch. Closes a replay-protection bypass on the EIP-3009 path, tightens signature `v`-byte validation against silent hex coercion, and fixes a misleading production recommendation around `Psr16NonceStore`. Tests pass on the CI matrix (PHP 8.2 / 8.3 / 8.4 × prefer-stable / prefer-lowest).
+
+### Bug fixes
+
+- **`PaymentEnforcer` replay gate was bypassable via injected `payload.authorization`** — `guardReplay()` keyed on the presence of an EIP-3009 `payload.authorization` block, which Permit2/Upto's `verifyShape()` does not reject as an extra payload key. A caller could ship a real `permit2Authorization` (or `uptoAuthorization`) alongside a forged top-level `authorization` with attacker-chosen `(from, nonce)`; the in-process store would claim the forged tuple and the real permit/witness signature stayed replayable. The gate now keys on the matched challenge (server-controlled): `scheme === "exact"` AND `network` starts with `eip155:` AND `extra.assetTransferMethod` normalized to `"eip3009"` (matching `ExactScheme::verifyShape`'s normalization, including non-string fallbacks). Permit2/Upto/Erc7710/Stellar/Svm paths route to the facilitator for nonce uniqueness as before.
+- **`SignatureVerifier` accepted any bytes for the `v` field** — `hexdec('gg')` silently coerces to `0`, so a malformed trailing `v` on a 65-byte signature would pass through as recovery id 0 and proceed to public-key recovery against the wrong byte instead of being rejected. Added `ctype_xdigit` validation on the full hex string up front and replaced the implicit `$v >= 27 ? $v - 27 : $v` arithmetic with an explicit `match` over `{0, 1, 27, 28}`. EIP-155 chainId-offset values (29/30/etc., used for raw transactions, not typed data) now fail with a clear error rather than tripping a downstream "invalid recovery id". Recovered public-key hex is also explicitly validated before `Keccak::hash`.
+- **`Psr16NonceStore` cannot satisfy `NonceStoreContract` atomicity** — PSR-16 has no add-if-absent primitive; the `has() + set()` implementation has a small race window that lets two concurrent workers both claim the same `(network, from, nonce)` and both settle. The contract's docblock requires atomic SETNX-EX semantics, but the in-package PSR-16 adapter never delivered them. Class is unchanged in behavior but its docblock now states it is fit for tests and single-worker dev only. The README pivots the production recommendation away from `Psr16NonceStore` and toward `LaravelNonceStore` (in `sandermuller/laravel-x402`, backed by `Cache::add()`) or a Redis `SET key value NX EX ttl` adapter implementing `NonceStoreContract` directly. The `Surface` table now lists the contract, not the adapter, as the production entry point.
+
+**Full Changelog**: https://github.com/SanderMuller/php-x402/compare/0.2.0...0.2.1
+
 ## 0.2.0 - 2026-05-08
 
 Idempotency past nonce, route patterns by regex, a CLI, and an `X402\Testing` namespace for adopter integration tests. All additive; one rename (`PaymentEnforcer::default()` → `forTesting()`) to remove a footgun. Tests pass on the CI matrix (PHP 8.2 / 8.3 / 8.4 × prefer-stable / prefer-lowest).
