@@ -43,9 +43,14 @@ final readonly class PaymentSignature
      * `exact`-scheme `authorization` payload. Returns null if any
      * required field is missing or empty.
      *
-     * Used by `PaymentEnforcer::guardReplay` for nonce-store TTL math
-     * and by `PaymentResponseCache` for the idempotency key. Hoisted
-     * here so the two callers share one extraction path.
+     * Adopter-facing helper for callers that need the EIP-3009 triple
+     * outside the `PaymentEnforcer` / `PaymentResponseCache` flow
+     * (e.g. logging, audit hooks, debugging). The two middlewares now
+     * use scheme-specific `ReplayKeyExtractor::replayKey()` instead,
+     * which differs from this method in that it coerces numeric JSON
+     * `nonce` values via `JsonReader::string()`. This helper sticks
+     * with `stringOrNull()` semantics — null on any missing or
+     * non-string-typed field — so adopters get the strict-typed view.
      *
      * @return array{from: string, nonce: string, validBefore: int}|null
      */
