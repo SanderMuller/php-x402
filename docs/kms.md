@@ -1,9 +1,9 @@
 # KMS-backed wallets
 
 `PrivateKeyWallet` stores the signing key in process memory — fine for
-tests and CLI tools, **not** fine for production. This page shows how to
-implement `X402\Client\Wallet` against a KMS so the private key never
-leaves the secure enclave.
+tests and CLI tools, **not** fine for production. This page shows the
+KMS-backed implementations the package ships, and how to plug in any
+other KMS / HSM / remote signer by extending `X402\Client\KmsWallet`.
 
 ## The contract
 
@@ -34,147 +34,116 @@ consumers expect `27`/`28`).
 
 Three rules every KMS adapter must follow:
 
-1. **Fetch the address once at construction.** Calling the KMS for every
-   `address()` invocation is wasteful — the address is derived from the
-   public key and never changes for a given key.
-2. **Return raw `r || s || v`, not DER-encoded ASN.1.** AWS KMS returns
-   DER by default; you must convert.
+1. **Fetch the address once.** Calling the KMS for every `address()`
+   invocation is wasteful — the address is derived from the public key
+   and never changes for a given key.
+2. **Return raw `r || s || v`, not DER-encoded ASN.1.** AWS / GCP /
+   Azure all return DER by default; you must convert.
 3. **Normalize `s` to the lower half of the secp256k1 curve order.**
    Ethereum rejects "high-s" signatures (EIP-2). KMS providers don't do
    this for you.
 
-## AWS KMS reference impl
+`X402\Client\KmsWallet` is an abstract that owns all three rules.
+Subclasses only implement two operations:
 
 ```php
-<?php
-
-declare(strict_types=1);
-
-namespace App\Wallets;
-
-use Aws\Kms\KmsClient;
-use kornrunner\Keccak;
-use X402\Client\Wallet;
-
-final class AwsKmsWallet implements Wallet
-{
-    /** secp256k1 curve order (half) — see EIP-2. */
-    private const string SECP256K1_HALF_N = '7fffffffffffffffffffffffffffffff5d576e7357a4501ddfe92f46681b20a0';
-
-    private readonly string $address;
-
-    public function __construct(
-        private readonly KmsClient $kms,
-        private readonly string $keyId,
-    ) {
-        $this->address = $this->deriveAddress();
-    }
-
-    public function address(): string
-    {
-        return $this->address;
-    }
-
-    public function signDigest(string $digest): string
-    {
-        $digestBytes = hex2bin(self::strip0x($digest));
-        if ($digestBytes === false || strlen($digestBytes) !== 32) {
-            throw new \InvalidArgumentException('digest must be 0x-prefixed 32-byte hex.');
-        }
-
-        $result = $this->kms->sign([
-            'KeyId' => $this->keyId,
-            'Message' => $digestBytes,
-            'MessageType' => 'DIGEST',                    // skip KMS's own SHA-256 wrap
-            'SigningAlgorithm' => 'ECDSA_SHA_256',
-        ]);
-
-        // KMS returns DER-encoded { r, s }. Parse into raw bytes.
-        [$r, $s] = self::parseDerSignature($result->get('Signature'));
-
-        // EIP-2: enforce low-s. Flip if needed.
-        if (gmp_cmp(gmp_init($s, 16), gmp_init(self::SECP256K1_HALF_N, 16)) > 0) {
-            $n = gmp_init('fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141', 16);
-            $s = str_pad(gmp_strval(gmp_sub($n, gmp_init($s, 16)), 16), 64, '0', STR_PAD_LEFT);
-        }
-
-        // v = recovery id (27 or 28). Recover by trying both candidates and
-        // matching against the known address. Implementation left as exercise —
-        // see simplito/elliptic-php's KeyPair::recoverPubKey, or call
-        // EthereumECDSARecovery from any of the published recovery libraries.
-        $v = $this->recoveryId($digestBytes, $r, $s);
-
-        return '0x'.$r.$s.dechex($v);
-    }
-
-    private function deriveAddress(): string
-    {
-        $der = $this->kms->getPublicKey(['KeyId' => $this->keyId])->get('PublicKey');
-        // GetPublicKey returns DER-encoded SubjectPublicKeyInfo. Strip the
-        // 23-byte prefix (algorithm OID + bit-string header) to get the
-        // raw 65-byte uncompressed point (0x04 || X || Y).
-        $uncompressed = substr($der, -65);
-        $xy = substr($uncompressed, 1);                   // drop 0x04 prefix
-        $hash = Keccak::hash($xy, 256);
-
-        return '0x'.substr($hash, -40);
-    }
-
-    private static function strip0x(string $hex): string
-    {
-        return str_starts_with($hex, '0x') ? substr($hex, 2) : $hex;
-    }
-
-    /**
-     * Parse `SEQUENCE { r INTEGER, s INTEGER }` into [r-hex, s-hex].
-     *
-     * @return array{0: string, 1: string}
-     */
-    private static function parseDerSignature(string $der): array
-    {
-        // Minimal DER parser — production code should use a battle-tested
-        // ASN.1 library (phpseclib3\File\ASN1, etc).
-        // ... (omitted for brevity — see phpseclib3 ASN.1 utilities)
-        throw new \RuntimeException('Implement DER parser; reference: phpseclib3\File\ASN1.');
-    }
-
-    private function recoveryId(string $digest, string $rHex, string $sHex): int
-    {
-        // For each candidate v in {27, 28}, recover the public key and
-        // compare the derived address to $this->address. Return the
-        // matching v.
-        // ... (omitted — see simplito/elliptic-php KeyPair::recoverPubKey)
-        throw new \RuntimeException('Implement v recovery; reference: simplito/elliptic-php.');
-    }
-}
+abstract protected function fetchPublicKeySpki(): string;
+abstract protected function rawSign(string $digestBytes): string;
 ```
 
-Wire it up:
+The abstract handles SPKI → address derivation (memoised), DER → raw
+`(r, s)` decoding via `X402\Support\Asn1DerDecoder`, EIP-2 low-s
+normalisation, and recovery-id brute force via
+`X402\Schemes\Evm\EcdsaRecovery`.
+
+## AWS KMS
 
 ```php
+use Aws\Kms\KmsClient;
+use X402\Client\AwsKmsWallet;
+use X402\Client\PayingClient;
+
 $wallet = new AwsKmsWallet(
-    kms: new KmsClient(['region' => 'us-east-1', 'version' => 'latest']),
+    kms:   new KmsClient(['region' => 'us-east-1', 'version' => 'latest']),
     keyId: 'arn:aws:kms:us-east-1:123:key/abcd-...',
 );
 
-$client = new \X402\Client\PayingClient(
-    inner: $psr18Client,
+$client = new PayingClient(
+    inner:  $psr18Client,
     wallet: $wallet,
 );
 ```
 
+The KMS key MUST be `ECC_SECG_P256K1` with a usage of `SIGN_VERIFY`.
+Any other curve or usage fails at the first signing attempt with a
+KMS-side `InvalidKeyUsageException`.
+
+`aws/aws-sdk-php` is in `suggest`, not `require` — adopters using
+PrivateKey / Hd / a different KMS don't need it. Add it explicitly
+in your application:
+
+```bash
+composer require aws/aws-sdk-php
+```
+
 ## Other providers
 
-The shape is identical for any KMS that exposes ECDSA secp256k1:
+The shape is identical for any KMS that exposes ECDSA secp256k1 — extend
+`KmsWallet` and wire two methods. GCP Cloud KMS sketch:
 
-- **GCP Cloud KMS** — `google/cloud-kms`. `asymmetricSign` returns DER;
-  same `s` normalization + `v` recovery.
-- **Azure Key Vault** — `microsoft/azure-key-vault-keys`. Use
-  `algorithm: 'ES256K'`; same handling.
-- **HSM (PKCS#11)** — `mxgmn/pkcs11-php` or a sidecar service. Same
-  shape, but address derivation may need an `EC_POINT_OCT` query.
-- **Remote signer** (Web3Signer, Vouch) — wrap the HTTP API; the
-  remote already returns `r || s || v` typically, no DER parsing.
+```php
+use Google\Cloud\Kms\V1\Client\KeyManagementServiceClient;
+use Google\Cloud\Kms\V1\AsymmetricSignRequest;
+use Google\Cloud\Kms\V1\GetPublicKeyRequest;
+use X402\Client\KmsWallet;
+
+final class GcpKmsWallet extends KmsWallet
+{
+    public function __construct(
+        private readonly KeyManagementServiceClient $kms,
+        private readonly string $keyVersionName,
+    ) {}
+
+    protected function fetchPublicKeySpki(): string
+    {
+        $pem = $this->kms->getPublicKey(
+            (new GetPublicKeyRequest())->setName($this->keyVersionName)
+        )->getPem();
+
+        // GCP returns PEM; strip the BEGIN/END envelope and base64-decode.
+        $body = preg_replace('/-----.*?-----|\s+/', '', $pem);
+        $der = base64_decode($body, true);
+
+        if ($der === false) {
+            throw new RuntimeException('Malformed PEM from GCP KMS.');
+        }
+
+        return $der;
+    }
+
+    protected function rawSign(string $digestBytes): string
+    {
+        $digest = new \Google\Cloud\Kms\V1\Digest();
+        $digest->setSha256($digestBytes);
+
+        $response = $this->kms->asymmetricSign(
+            (new AsymmetricSignRequest())
+                ->setName($this->keyVersionName)
+                ->setDigest($digest)
+        );
+
+        return $response->getSignature();
+    }
+}
+```
+
+The same pattern fits **Azure Key Vault**
+(`microsoft/azure-key-vault-keys`, algorithm `ES256K`), **HashiCorp
+Vault** (Transit secrets engine with `ecdsa-p256k1`), **HSMs over
+PKCS#11**, and remote signers like Web3Signer / Vouch. Pull request
+welcome for first-party `GcpKmsWallet` / `HashicorpVaultWallet` once
+real adoption is in place — until then the sketch above is the
+canonical shape.
 
 ## Don't
 
@@ -189,7 +158,9 @@ The shape is identical for any KMS that exposes ECDSA secp256k1:
 
 ## Testing
 
-Use `X402\Testing\StubFacilitator` to avoid network during tests, and
+Use `X402\Testing\FakeFacilitator` to avoid network during tests, and
 `X402\Client\PrivateKeyWallet` (with a throwaway key) to verify the
-round-trip without real KMS calls. Production hosts swap in their KMS
-adapter at the boundary.
+round-trip without real KMS calls. Mock the underlying SDK client with
+Mockery / PHPUnit's `createMock()` when you need to exercise the
+`AwsKmsWallet` / `GcpKmsWallet` path itself — see
+`tests/Unit/Client/AwsKmsWalletTest.php` for the canonical pattern.

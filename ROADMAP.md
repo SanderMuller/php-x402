@@ -42,6 +42,7 @@ gaps in commit messages.
 | 0.5.1   | `PriceParser::toAtomic()` strict-by-default — reject negative / decimal-overflow / non-strict-shape    |
 | 0.6.0   | `X402\Facilitator\DispatchingFacilitator` (outcome closures), `PaymentOutcome` / `PaymentOutcomeKind`, `PaymentRowBuilder::fromOutcome()` |
 | 0.7.0   | Async settlement (`SettleResult::pending`, 202 path, `SettlePending` outcome), `X402\Webhook\*` primitives, `X402\Client\HdWallet` (BIP-32), `PaymentResponseCacheOptions` DTO |
+| 0.8.0   | `X402\Client\KmsWallet` (abstract) + `AwsKmsWallet`, `X402\Support\Asn1DerDecoder` (strict canonical), `X402\Schemes\Evm\EcdsaRecovery`, EIP-2 low-s enforcement in `SignatureExporter`, Wallet conformance test suite |
 
 ---
 

@@ -1,5 +1,35 @@
 # Upgrading
 
+## From 0.7.x to 0.8.0
+
+### KMS-backed wallets now ship in core — `X402\Client\KmsWallet` + `AwsKmsWallet`
+
+Previously adopters implemented `X402\Client\Wallet` against their KMS by hand (the AWS reference in `docs/kms.md` was a sketch with placeholder DER + recovery-id helpers). 0.8.0 ships:
+
+- `X402\Client\KmsWallet` — abstract base that owns DER signature decoding, EIP-2 low-s normalisation, on-curve point validation, recovery-id derivation, and `r ‖ s ‖ v` packing. Subclasses provide two thin methods (`fetchPublicKeySpki`, `rawSign`).
+- `X402\Client\AwsKmsWallet` — concrete implementation wired to `Aws\Kms\KmsClient`. `aws/aws-sdk-php` lives in `suggest` (opt-in), so adopters on raw private keys / HD / other KMSes don't carry it.
+- `X402\Support\Asn1DerDecoder` — strict canonical DER parser (signature + SPKI). Rejects negative ASN.1 integers, over-padded encodings, non-secp256k1 algorithm identifiers, and off-curve points up-front.
+- `X402\Schemes\Evm\EcdsaRecovery` — recovery-id brute-force helper (loops `v ∈ {27, 28}` against the expected address).
+
+GCP Cloud KMS / HashiCorp Vault / Azure Key Vault subclasses follow the same `KmsWallet` extension pattern — see `docs/kms.md` for the canonical sketch. Pull requests welcome for first-party implementations once real adoption is in place.
+
+If you wrote a hand-rolled KMS adapter against the 0.7.x contract, the migration is to extend `KmsWallet` instead of implementing `Wallet` directly — the abstract handles the three docs/kms.md rules you previously implemented yourself.
+
+### `SignatureExporter` always emits EIP-2 canonical (low-s) signatures
+
+`PrivateKeyWallet` and `HdWallet` previously relied on simplito's `canonical: true` option to enforce low-s. That option is silently dropped when the wrapper calls `KeyPair::sign($enc=false, $options=['canonical' => true])` due to a quiet arg-swap in `EC::sign` — so high-s signatures slipped through whenever the deterministic nonce landed in the upper half of the curve order.
+
+0.8.0 fixes this in `X402\Schemes\Evm\SignatureExporter::toHex65`: if `s > n/2`, it replaces s with `n - s` and flips the recovery parity. All wallet implementations (PrivateKey / HD / KMS / future subclasses) now produce byte-canonical EIP-2 signatures.
+
+**Adopter impact:** signatures recover to the same address as before, but the exact `s` byte and `v` byte can differ. Two effects:
+
+1. **EVM contracts that enforce EIP-2 (USDC `transferWithAuthorization`, OpenZeppelin's `ECDSA.recover`, …) accept these signatures where they previously rejected them silently.** This is the bug-fix half.
+2. **If you pinned wallet output byte-for-byte in your test suite** (`expect($wallet->signDigest(...))->toBe('0x…')`), the expected hex may need to change for half of your fixtures. Re-generate by running the assertion once and copying the new value, or assert recovery + low-s instead of byte-identity.
+
+### Wallet conformance test suite
+
+`tests/Unit/Client/WalletConformanceTest.php` is a dataset-driven suite that every `Wallet` implementation must satisfy: EIP-2 canonical s, deterministic signing (RFC 6979), address-recovery round-trip, v ∈ {27, 28}, signature/address byte shape. New wallet subclasses get a row in the dataset rather than a bespoke test file. Run it locally with `vendor/bin/pest tests/Unit/Client/WalletConformanceTest.php`.
+
 ## From 0.6.x to 0.7.0
 
 ### `PaymentEnforcer` returns 202 Accepted when settle is pending

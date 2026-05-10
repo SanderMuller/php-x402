@@ -64,13 +64,13 @@ use X402\Client\PrivateKeyWallet;
 
 $client = new PayingClient(
     inner:  $psr18Client,                       // Guzzle, Symfony HttpClient, etc.
-    wallet: new PrivateKeyWallet($operatorPk),  // or your KMS-backed Wallet
+    wallet: new PrivateKeyWallet($operatorPk),  // or an AwsKmsWallet — see Wallets row in Surface
 );
 
 $response = $client->sendRequest($request);     // 402 → sign → retry → 200
 ```
 
-`PrivateKeyWallet` is fine for tests and CLI tools. **For production, implement `X402\Client\Wallet` against a KMS** (AWS, GCP, HSM) so private keys never sit in process memory. See [`docs/kms.md`](https://github.com/SanderMuller/php-x402/blob/main/docs/kms.md) for the contract details, AWS-KMS reference impl, and the three rules every adapter must follow (low-s normalization, DER → raw conversion, recovery-id derivation).
+`PrivateKeyWallet` is fine for tests and CLI tools. **For production, use `X402\Client\AwsKmsWallet`** (or subclass `X402\Client\KmsWallet` for GCP / Azure / Vault / HSM) so private keys never sit in process memory. The abstract owns DER decoding, EIP-2 low-s normalisation, on-curve validation, and recovery-id derivation; subclasses provide two thin methods. See [`docs/kms.md`](https://github.com/SanderMuller/php-x402/blob/main/docs/kms.md) for wiring + the GCP / Vault sketches.
 
 ## Surface
 
@@ -89,7 +89,7 @@ $response = $client->sendRequest($request);     // 402 → sign → retry → 20
 | Webhook primitives | `X402\Webhook\SignatureVerifier`, `WebhookEvent`, `WebhookDedupStore` |
 | Schemes (opt-in)   | `X402\Schemes\ReplayKeyExtractor` (per-scheme replay extraction)   |
 | Signing            | `X402\Schemes\Evm\AuthorizationSigner`, `Eip712Hasher`             |
-| Wallets            | `X402\Client\PrivateKeyWallet`, `X402\Client\HdWallet` (BIP-32)    |
+| Wallets            | `X402\Client\PrivateKeyWallet`, `HdWallet` (BIP-32), `KmsWallet` (abstract) + `AwsKmsWallet` |
 | Verification       | `X402\Schemes\Evm\SignatureVerifier`                               |
 | Replay store       | `X402\Replay\NonceStoreContract`, `CallbackNonceStore`             |
 | Decimal helper     | `X402\Support\PriceParser`                                         |
@@ -210,7 +210,7 @@ See [`CHANGELOG.md`](https://github.com/SanderMuller/php-x402/blob/main/CHANGELO
 
 ## Upgrading
 
-See [`UPGRADING.md`](https://github.com/SanderMuller/php-x402/blob/main/UPGRADING.md) for migration notes between minor / major bumps (`0.2.x` → `0.3.0`, `0.3.x` → `0.4.0`, `0.6.x` → `0.7.0`).
+See [`UPGRADING.md`](https://github.com/SanderMuller/php-x402/blob/main/UPGRADING.md) for migration notes between minor / major bumps (`0.2.x` → `0.3.0`, `0.3.x` → `0.4.0`, `0.6.x` → `0.7.0`, `0.7.x` → `0.8.0`).
 
 ## Contributing
 
