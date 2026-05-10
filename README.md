@@ -83,6 +83,9 @@ $response = $client->sendRequest($request);     // 402 → sign → retry → 20
 | Idempotency key    | `X402\Server\IdempotencyKeyBuilder` (transport-agnostic)           |
 | Client decorator   | `X402\Client\PayingClient` (PSR-18)                                |
 | Facilitator        | `X402\Facilitator\CoinbaseFacilitator`                             |
+| Event hooks        | `X402\Facilitator\DispatchingFacilitator` (wraps any FacilitatorClient, fires closures on every outcome) |
+| Outcome DTO        | `X402\Facilitator\PaymentOutcome`, `PaymentOutcomeKind` (enum)     |
+| Payment history    | `X402\PaymentHistory\PaymentRowBuilder` (flat-row helper)          |
 | Schemes (opt-in)   | `X402\Schemes\ReplayKeyExtractor` (per-scheme replay extraction)   |
 | Signing            | `X402\Schemes\Evm\AuthorizationSigner`, `Eip712Hasher`             |
 | Verification       | `X402\Schemes\Evm\SignatureVerifier`                               |
@@ -149,6 +152,27 @@ Same Redis-backed PSR-16 store as the nonce store. TTL should comfortably exceed
 > - `Psr16NonceStore`: `has() + set()` on PSR-16. **NOT atomic** (PSR-16 has no add-if-absent primitive). Acceptable for tests and single-worker dev only. A small race window allows two workers to both claim the same nonce and both settle.
 > - Production: use `LaravelNonceStore` (in [`sandermuller/laravel-x402`](https://github.com/sandermuller/laravel-x402), backed by `Cache::add()`), or implement `NonceStoreContract` against Redis `SETNX EX` directly. Anything else breaks the security contract.
 
+## Event hooks and payment history
+
+`DispatchingFacilitator` wraps any `FacilitatorClient` and fires a closure with a `PaymentOutcome` on every verify / settle outcome — `VerifyRejected`, `VerifyError`, `SettleSucceeded`, `SettleFailed`, `SettleError`. Adopters wire host-specific event dispatch (Symfony EventDispatcher, log channels, metrics) inside the closure:
+
+```php
+use X402\Facilitator\DispatchingFacilitator;
+use X402\Facilitator\PaymentOutcome;
+use X402\Facilitator\PaymentOutcomeKind;
+use X402\PaymentHistory\PaymentRowBuilder;
+
+$facilitator = new DispatchingFacilitator(
+    inner: CoinbaseFacilitator::default($psr18Client, $psr17),
+    onOutcome: function (PaymentOutcome $outcome, array $context) use ($db): void {
+        $db->insert('x402_payments', PaymentRowBuilder::fromOutcome($outcome, $context));
+    },
+    captureContext: fn (): array => ['user_id' => $request->getAttribute('user')?->id],
+);
+```
+
+`PaymentRowBuilder::fromOutcome()` returns a flat array matching the laravel-x402 `x402_payments` migration shape — adopters using Eloquent feed it directly into `Payment::query()->updateOrCreate(...)`. Listener and context-capture exceptions on `*-error` paths are silently swallowed so the original facilitator throwable always propagates to the caller.
+
 ## Framework adapters
 
 - Laravel: [`sandermuller/laravel-x402`](https://github.com/sandermuller/laravel-x402)
@@ -166,9 +190,6 @@ For adopter integration tests, the `X402\Testing` namespace ships:
 
 - `PaymentRequiredBuilder`: fluent USDC-on-Base / Base-Sepolia helpers, atomic-unit conversion via `X402\Support\PriceParser` (since 0.4.1).
 - `FakeFacilitator`: canonical test double. Settles locally, configures outcomes via `rejectVerify('reason')` / `failSettle('reason')` mid-test, records full signature + challenge payload on every call, and ships PHPUnit assertion helpers (`assertVerified`, `assertSettled`, `assertNothingSettled`).
-
-> [!NOTE]
-> `StubFacilitator` and `RecordingFacilitator` are `@deprecated since 0.5.0` in favour of `FakeFacilitator`, which is a functional superset of both. They stay through 0.5.x and are removed in 0.6.0. Migrate by swapping the import.
 
 Conformance vectors in `tests/Fixtures/eip712-vectors.json` mirror the upstream Coinbase Go test suite. A hash deviation here is a deviation from the spec.
 

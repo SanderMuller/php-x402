@@ -19,10 +19,10 @@ use X402\Protocol\PaymentSignature;
  * tests configure outcomes — pass/reject without hitting Coinbase or
  * any network.
  *
- * Functional superset of `StubFacilitator` (configurable outcomes) and
- * `RecordingFacilitator` (call capture) — those two are
- * `@deprecated since 0.5.0` and will be removed in 0.6.0. Migrate by
- * replacing the import.
+ * Removed in 0.6.0: `StubFacilitator` (configurable outcomes) and
+ * `RecordingFacilitator` (call capture). Adopters migrating from
+ * either pre-0.5.0 import: this class is a functional superset of
+ * both — swap the import.
  *
  * Usage:
  *
