@@ -61,6 +61,7 @@ it('builds a settled row using SettleResult fields and the captured resource', f
         'network' => 'eip155:8453',
         'transaction' => '0xtxhash',
         'nonce' => '0xnonce',
+        'tracker' => null,
         'reason' => null,
         'extensions' => ['receipt' => 'ok'],
         'meta' => ['user_id' => 7],
@@ -152,6 +153,7 @@ it('builds a rejected row with reason from VerifyRejected outcome', function ():
         'network' => 'eip155:8453',
         'transaction' => null,
         'nonce' => '0xnonce',
+        'tracker' => null,
         'reason' => 'insufficient-funds',
         'extensions' => ['source' => 'sig-ext'],
         'meta' => ['ip' => '1.2.3.4'],
@@ -418,6 +420,95 @@ it('writes empty meta array when no context is supplied', function (): void {
     $row = PaymentRowBuilder::fromOutcome($outcome);
 
     expect($row['meta'])->toBe([]);
+});
+
+it('builds a pending row with status=pending, transaction=null, tracker populated', function (): void {
+    $outcome = new PaymentOutcome(
+        kind: PaymentOutcomeKind::SettlePending,
+        signature: rowBuilderEip3009Signature(),
+        challenge: rowBuilderChallenge(),
+        resource: 'route:premium',
+        settle: SettleResult::pending('tracker-abc', 'eip155:8453', '0xpayerFromFacilitator'),
+    );
+
+    $row = PaymentRowBuilder::fromOutcome($outcome, ['user_id' => 7]);
+
+    expect($row)->toBe([
+        'status' => 'pending',
+        'resource' => 'route:premium',
+        'payer' => '0xpayerFromFacilitator',
+        'pay_to' => '0xrecipient',
+        'amount' => '10000',
+        'asset' => '0xasset',
+        'network' => 'eip155:8453',
+        'transaction' => null,
+        'nonce' => '0xnonce',
+        'tracker' => 'tracker-abc',
+        'reason' => null,
+        'extensions' => [],
+        'meta' => ['user_id' => 7],
+        'settled_at' => null,
+    ]);
+});
+
+it('uses settle.network and settle.amount on pending rows when present', function (): void {
+    $settle = new SettleResult(
+        success: false,
+        transaction: '',
+        network: 'eip155:42161',
+        payer: '0xpayer',
+        amount: '7777',
+        extensions: ['hint' => 'arb'],
+        tracker: 'tracker-xyz',
+    );
+
+    $outcome = new PaymentOutcome(
+        kind: PaymentOutcomeKind::SettlePending,
+        signature: rowBuilderEip3009Signature(),
+        challenge: rowBuilderChallenge(),
+        resource: 'route:premium',
+        settle: $settle,
+    );
+
+    $row = PaymentRowBuilder::fromOutcome($outcome);
+
+    expect($row['network'])->toBe('eip155:42161')
+        ->and($row['amount'])->toBe('7777')
+        ->and($row['extensions'])->toBe(['hint' => 'arb'])
+        ->and($row['tracker'])->toBe('tracker-xyz');
+});
+
+it('preserves null settled_at and null transaction on pending rows', function (): void {
+    $outcome = new PaymentOutcome(
+        kind: PaymentOutcomeKind::SettlePending,
+        signature: rowBuilderEip3009Signature(),
+        challenge: rowBuilderChallenge(),
+        resource: 'route:premium',
+        settle: SettleResult::pending('t', 'eip155:8453'),
+    );
+
+    $row = PaymentRowBuilder::fromOutcome($outcome, now: new DateTimeImmutable('2026-05-10'));
+
+    expect($row['settled_at'])->toBeNull()
+        ->and($row['transaction'])->toBeNull()
+        ->and($row['reason'])->toBeNull();
+});
+
+it('falls back to challenge fields on pending rows when SettleResult fields are empty', function (): void {
+    $outcome = new PaymentOutcome(
+        kind: PaymentOutcomeKind::SettlePending,
+        signature: rowBuilderEip3009Signature(),
+        challenge: rowBuilderChallenge(),
+        resource: 'route:premium',
+        // SettleResult::pending() defaults network from arg, payer to ''.
+        settle: SettleResult::pending('tracker-abc', ''),
+    );
+
+    $row = PaymentRowBuilder::fromOutcome($outcome);
+
+    expect($row['network'])->toBe('eip155:8453') // challenge fallback
+        ->and($row['payer'])->toBe('0xfrom') // authorization() fallback
+        ->and($row['amount'])->toBe('10000'); // challenge fallback
 });
 
 it('writes null reason when outcome.reason is empty string after truncation', function (): void {

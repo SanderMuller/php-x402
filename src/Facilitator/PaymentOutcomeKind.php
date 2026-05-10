@@ -32,6 +32,15 @@ enum PaymentOutcomeKind: string
 
     case SettleSucceeded = 'settle-succeeded';
 
+    /**
+     * Async-settlement in flight. The facilitator accepted the
+     * authorization synchronously and will deliver the on-chain outcome
+     * via webhook. `PaymentOutcome::$settle` carries a `SettleResult`
+     * with `success=false`, empty `transaction`, and a non-empty
+     * `tracker`. `reason` is null — pending is not a failure.
+     */
+    case SettlePending = 'settle-pending';
+
     case SettleFailed = 'settle-failed';
 
     case SettleError = 'settle-error';

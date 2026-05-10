@@ -22,6 +22,9 @@ use X402\Protocol\PaymentSignature;
  *                         `exception` populated.
  *   - `SettleSucceeded` : `settle` populated, `verify` null, `reason`
  *                         null, `exception` null.
+ *   - `SettlePending`   : `settle` populated (with `success=false`,
+ *                         non-empty `tracker`, empty `transaction`),
+ *                         `verify` null, `reason` null, `exception` null.
  *   - `SettleFailed`    : `settle` populated (with `success=false`),
  *                         `verify` null, `reason` = `errorReason`,
  *                         `exception` null.

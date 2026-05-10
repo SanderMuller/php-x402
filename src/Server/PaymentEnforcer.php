@@ -16,6 +16,7 @@ use Psr\Log\NullLogger;
 use X402\Errors\ErrorReason;
 use X402\Exceptions\InvalidPaymentException;
 use X402\Facilitator\FacilitatorClient;
+use X402\Facilitator\SettleResult;
 use X402\Protocol\PaymentRequired;
 use X402\Protocol\PaymentResponse;
 use X402\Protocol\PaymentSignature;
@@ -176,6 +177,15 @@ final readonly class PaymentEnforcer implements MiddlewareInterface
 
         $settle = $this->facilitator->settle($signature, $challenge);
 
+        if ($settle->isPending()) {
+            $this->logger->info('x402: settlement pending — async webhook will resolve', [
+                'network' => $settle->network,
+                'tracker' => $settle->tracker,
+            ]);
+
+            return $this->pendingResponse($settle);
+        }
+
         if (! $settle->success) {
             $this->logger->warning('x402: settlement failed', ['reason' => $settle->errorReason]);
 
@@ -205,6 +215,53 @@ final readonly class PaymentEnforcer implements MiddlewareInterface
         );
 
         return $response->withHeader($this->version->responseHeader(), $receipt->toHeader());
+    }
+
+    /**
+     * Build the 202 Accepted response for an async-settlement in flight.
+     * The wrapped handler MUST NOT be invoked — the buyer has signed
+     * the authorization but the on-chain transfer has not confirmed,
+     * so delivering content now defeats x402.
+     *
+     * The body advertises the tracker so the buyer can poll a
+     * host-defined endpoint (or be served via host-side long-polling
+     * — out of scope here). The PAYMENT-RESPONSE header carries the
+     * pending receipt shape (`success: false`, `tracker: <id>`, no
+     * transaction) for clients that already parse it.
+     *
+     * **Lost-receipt tradeoff.** `PaymentResponseCache` is wired to
+     * skip caching this 202 (replaying a stale tracker after webhook
+     * resolution would lie about the settlement state — peer Q4 in
+     * `internal/specs/spec-inbound-webhook.md`). One consequence: a
+     * buyer whose connection drops before the 202 lands cannot retry
+     * the same `X-PAYMENT` to recover the tracker — the nonce is
+     * already claimed and replay-guard returns 400. Hosts that care
+     * about this gap MUST expose a separate poll endpoint keyed on
+     * `(network, nonce)` so the buyer can request the tracker
+     * out-of-band; their pending row already carries it.
+     */
+    private function pendingResponse(SettleResult $settle): ResponseInterface
+    {
+        $receipt = new PaymentResponse(
+            success: false,
+            transaction: '',
+            network: $settle->network,
+            payer: $settle->payer,
+            amount: $settle->amount,
+            extensions: $settle->extensions,
+            tracker: $settle->tracker,
+        );
+
+        $body = json_encode(
+            ['status' => 'pending', 'tracker' => $settle->tracker ?? ''],
+            JSON_THROW_ON_ERROR,
+        );
+
+        return $this->responseFactory
+            ->createResponse(202, 'Accepted')
+            ->withHeader('Content-Type', 'application/json')
+            ->withHeader($this->version->responseHeader(), $receipt->toHeader())
+            ->withBody($this->streamFactory->createStream($body));
     }
 
     /**

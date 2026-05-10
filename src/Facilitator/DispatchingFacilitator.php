@@ -141,6 +141,17 @@ final readonly class DispatchingFacilitator implements FacilitatorClient
                 resource: $this->formatResource($challenge),
                 settle: $result,
             ));
+        } elseif ($result->isPending()) {
+            // Pending precedes SettleFailed: a SettleResult with
+            // success=false + non-empty tracker is in-flight, not
+            // failed. `reason` stays null — pending is not a rejection.
+            $this->emit(new PaymentOutcome(
+                kind: PaymentOutcomeKind::SettlePending,
+                signature: $signature,
+                challenge: $challenge,
+                resource: $this->formatResource($challenge),
+                settle: $result,
+            ));
         } else {
             $this->emit(new PaymentOutcome(
                 kind: PaymentOutcomeKind::SettleFailed,

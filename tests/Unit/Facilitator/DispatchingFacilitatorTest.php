@@ -201,6 +201,58 @@ it('fires SettleFailed with errorReason as reason when settle returns success=fa
         ->and($captured?->settle?->success)->toBeFalse();
 });
 
+it('fires SettlePending when settle returns a pending result', function (): void {
+    $captured = null;
+    $dispatcher = new DispatchingFacilitator(
+        inner: programmableInner(
+            onVerify: fn (): VerifyResult => new VerifyResult(isValid: true),
+            onSettle: fn (): SettleResult => SettleResult::pending('tracker-abc', 'eip155:8453', '0xpayer'),
+        ),
+        onOutcome: function (PaymentOutcome $o) use (&$captured): void {
+            $captured = $o;
+        },
+    );
+
+    $dispatcher->settle(dispatchSignature(), dispatchChallenge());
+
+    expect($captured?->kind)->toBe(PaymentOutcomeKind::SettlePending)
+        ->and($captured?->reason)->toBeNull()
+        ->and($captured?->settle?->success)->toBeFalse()
+        ->and($captured?->settle?->tracker)->toBe('tracker-abc')
+        ->and($captured?->settle?->isPending())->toBeTrue()
+        ->and($captured?->verify)->toBeNull()
+        ->and($captured?->exception)->toBeNull();
+});
+
+it('routes SettlePending precedence over SettleFailed when tracker is set', function (): void {
+    // Bypass SettleResult::pending() factory to construct a "failed but
+    // tracker-bearing" payload directly: success=false, errorReason
+    // present, AND a non-empty tracker. The dispatcher MUST treat this
+    // as pending, not failed.
+    $captured = null;
+    $dispatcher = new DispatchingFacilitator(
+        inner: programmableInner(
+            onVerify: fn (): VerifyResult => new VerifyResult(isValid: true),
+            onSettle: fn (): SettleResult => new SettleResult(
+                success: false,
+                transaction: '',
+                network: 'eip155:8453',
+                payer: '0xpayer',
+                errorReason: 'still-pending-on-chain',
+                tracker: 'tracker-xyz',
+            ),
+        ),
+        onOutcome: function (PaymentOutcome $o) use (&$captured): void {
+            $captured = $o;
+        },
+    );
+
+    $dispatcher->settle(dispatchSignature(), dispatchChallenge());
+
+    expect($captured?->kind)->toBe(PaymentOutcomeKind::SettlePending)
+        ->and($captured?->reason)->toBeNull();
+});
+
 it('fires SettleError with prefixed reason and re-throws when inner settle throws', function (): void {
     $captured = null;
     $dispatcher = new DispatchingFacilitator(

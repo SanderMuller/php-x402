@@ -985,3 +985,54 @@ it('uses the configured resourceResolver so cache scoping aligns with PaymentEnf
     expect($handler->calls)->toBe(1)                                            // resolver collapsed to same resource → cache hit on retry
         ->and($cache->store)->toHaveCount(1);
 });
+
+it('does not cache pending (202) responses — direct read of isPending() on the receipt', function (): void {
+    $cache = new IdempotencyArrayCache();
+    $factory = new Psr17Factory();
+    $middleware = new PaymentResponseCache(cache: $cache, responseFactory: $factory, streamFactory: $factory, schemes: ['exact' => new ExactScheme()]);
+
+    $pendingReceipt = base64_encode((string) json_encode([
+        'success' => false,
+        'transaction' => '',
+        'network' => 'eip155:8453',
+        'payer' => '0xpayer',
+        'tracker' => 'tracker-async-1',
+    ]));
+
+    $handler = new CountingHandler(new PsrResponse(
+        202,
+        ['Content-Type' => 'application/json', Version::V1->responseHeader() => $pendingReceipt],
+        '{"status":"pending","tracker":"tracker-async-1"}',
+    ));
+
+    $response = $middleware->process(signedPaymentRequest(), $handler);
+
+    expect($response->getStatusCode())->toBe(202)
+        ->and($cache->store)->toBe([]);                                         // pending NEVER cached
+});
+
+it('still caches a settled (200) response carrying a non-pending receipt — guard for 202-only narrowing', function (): void {
+    // Sanity-check the 202-pending skip didn't accidentally break the
+    // happy path: a normal settled receipt with success=true must still
+    // cache.
+    $cache = new IdempotencyArrayCache();
+    $factory = new Psr17Factory();
+    $middleware = new PaymentResponseCache(cache: $cache, responseFactory: $factory, streamFactory: $factory, schemes: ['exact' => new ExactScheme()]);
+
+    $settledReceipt = base64_encode((string) json_encode([
+        'success' => true,
+        'transaction' => '0xtx',
+        'network' => 'eip155:8453',
+        'payer' => '0xpayer',
+    ]));
+
+    $handler = new CountingHandler(new PsrResponse(
+        200,
+        ['Content-Type' => 'text/plain', Version::V1->responseHeader() => $settledReceipt],
+        'protected',
+    ));
+
+    $middleware->process(signedPaymentRequest(), $handler);
+
+    expect($cache->store)->toHaveCount(1);
+});

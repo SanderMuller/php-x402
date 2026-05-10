@@ -366,6 +366,25 @@ final readonly class PaymentResponseCache implements MiddlewareInterface
             return false;
         }
 
+        // 202 Accepted is the enforcer's pending-settlement status —
+        // SettleResult::isPending() returned true upstream, so the
+        // tracker carried in the receipt is in flight. Caching a
+        // pending receipt would replay a stale tracker after the
+        // settlement webhook resolved the row, serving an outdated
+        // status to the buyer. Skip-cache here; the next retry
+        // genuinely needs a fresh enforcer pass to learn the
+        // settled / rejected / cancelled outcome.
+        //
+        // Side effect: a buyer whose connection drops before the
+        // 202 lands CANNOT recover the tracker by retrying the same
+        // X-PAYMENT — replay-guard burns the nonce on first sight.
+        // Hosts that care about this gap surface a poll endpoint on
+        // (network, nonce). Tradeoff documented in
+        // `internal/specs/spec-inbound-webhook.md` (peer Q4).
+        if ($status === 202 && $this->receiptIsPending($response)) {
+            return false;
+        }
+
         // Reject variant-specific representations. The cache key binds
         // the signed authorization but not request `Range` /
         // `Accept-Encoding` / Vary inputs, so replaying a gzipped
@@ -468,5 +487,42 @@ final readonly class PaymentResponseCache implements MiddlewareInterface
     private function resolveResource(ServerRequestInterface $request): string
     {
         return InvokeResourceResolver::resolve($this->resourceResolver, $request, self::class);
+    }
+
+    /**
+     * Decode the response's PAYMENT-RESPONSE receipt and check whether
+     * it carries pending semantics — `success === false` AND a
+     * non-empty `tracker`. Mirrors `SettleResult::isPending()` against
+     * the on-the-wire receipt, with no side-channel flag — the cache
+     * couples directly to the protocol-truthful pending state.
+     */
+    private function receiptIsPending(ResponseInterface $response): bool
+    {
+        $headerLine = $response->getHeaderLine($this->version->responseHeader());
+
+        if ($headerLine === '') {
+            return false;
+        }
+
+        $decoded = base64_decode($headerLine, true);
+
+        if ($decoded === false) {
+            return false;
+        }
+
+        try {
+            $payload = json_decode($decoded, true, flags: JSON_THROW_ON_ERROR);
+        } catch (Throwable) {
+            return false;
+        }
+
+        if (! is_array($payload)) {
+            return false;
+        }
+
+        $success = $payload['success'] ?? null;
+        $tracker = $payload['tracker'] ?? null;
+
+        return $success === false && is_string($tracker) && $tracker !== '';
     }
 }

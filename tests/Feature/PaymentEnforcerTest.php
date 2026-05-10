@@ -8,7 +8,12 @@ use Nyholm\Psr7\ServerRequest;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use Psr\Http\Server\RequestHandlerInterface;
+use X402\Facilitator\DiscoveryPage;
+use X402\Facilitator\DiscoveryQuery;
 use X402\Facilitator\FacilitatorClient;
+use X402\Facilitator\SettleResult;
+use X402\Facilitator\SupportedKinds;
+use X402\Facilitator\VerifyResult;
 use X402\Protocol\PaymentRequired;
 use X402\Protocol\PaymentSignature;
 use X402\Protocol\Version;
@@ -26,6 +31,47 @@ final class OkHandler implements RequestHandlerInterface
     public function handle(ServerRequestInterface $request): ResponseInterface
     {
         return new PsrResponse(200, ['Content-Type' => 'text/plain'], 'protected resource');
+    }
+}
+
+final class EnforcerCountingHandler implements RequestHandlerInterface
+{
+    public int $calls = 0;
+
+    public function handle(ServerRequestInterface $request): ResponseInterface
+    {
+        ++$this->calls;
+
+        return new PsrResponse(200, ['Content-Type' => 'text/plain'], 'protected resource');
+    }
+}
+
+final readonly class PendingFacilitator implements FacilitatorClient
+{
+    public function __construct(
+        public string $tracker = 'tracker-async-1',
+        public string $network = 'eip155:8453',
+        public string $payer = '0xpayerFromFac',
+    ) {}
+
+    public function verify(PaymentSignature $signature, PaymentRequired $challenge): VerifyResult
+    {
+        return new VerifyResult(isValid: true, payer: $this->payer);
+    }
+
+    public function settle(PaymentSignature $signature, PaymentRequired $challenge): SettleResult
+    {
+        return SettleResult::pending($this->tracker, $this->network, $this->payer);
+    }
+
+    public function supported(): SupportedKinds
+    {
+        return new SupportedKinds(kinds: []);
+    }
+
+    public function discoverResources(DiscoveryQuery $query = new DiscoveryQuery()): DiscoveryPage
+    {
+        return new DiscoveryPage(items: [], limit: $query->limit, offset: $query->offset, total: 0);
     }
 }
 
@@ -111,6 +157,37 @@ it('returns 402 when facilitator settle fails', function (): void {
     $response = buildEnforcer((new FakeFacilitator())->failSettle())->process(buildSignedRequest('X-PAYMENT'), new OkHandler());
 
     expect($response->getStatusCode())->toBe(402);
+});
+
+it('returns 202 Accepted with tracker body when settle returns pending', function (): void {
+    $facilitator = new PendingFacilitator(tracker: 'tracker-async-7');
+    $response = buildEnforcer($facilitator)->process(buildSignedRequest('X-PAYMENT'), new OkHandler());
+
+    expect($response->getStatusCode())->toBe(202);
+
+    $body = (string) $response->getBody();
+    /** @var array{status: string, tracker: string} $decoded */
+    $decoded = json_decode($body, true, flags: JSON_THROW_ON_ERROR);
+    expect($decoded)->toBe(['status' => 'pending', 'tracker' => 'tracker-async-7']);
+
+    $headerValue = $response->getHeaderLine('X-PAYMENT-RESPONSE');
+    expect($headerValue)->not->toBe('');
+
+    /** @var array{success: bool, transaction: string, tracker: string} $receipt */
+    $receipt = json_decode((string) base64_decode($headerValue, true), true, flags: JSON_THROW_ON_ERROR);
+    expect($receipt['success'])->toBeFalse()
+        ->and($receipt['transaction'])->toBe('')
+        ->and($receipt['tracker'])->toBe('tracker-async-7');
+});
+
+it('does not invoke the inner handler when settle is pending', function (): void {
+    $handler = new EnforcerCountingHandler();
+    $facilitator = new PendingFacilitator();
+
+    $response = buildEnforcer($facilitator)->process(buildSignedRequest('X-PAYMENT'), $handler);
+
+    expect($response->getStatusCode())->toBe(202)
+        ->and($handler->calls)->toBe(0);
 });
 
 it('rejects nonce reuse', function (): void {

@@ -17,23 +17,35 @@ use X402\Protocol\PaymentRequired;
  * Returned array shape (matches the laravel-x402-shipped migration's
  * `x402_payments` columns byte-for-byte):
  *
- *     status         string   'settled' | 'rejected'
+ *     status         string   'settled' | 'rejected' | 'pending'
  *     resource       string   $outcome->resource verbatim
  *     payer          ?string
  *     pay_to         string   $challenge->payTo
- *     amount         string   atomic units; settled-rows prefer SettleResult->amount, fall back to challenge
+ *     amount         string   atomic units; settled / pending rows prefer SettleResult->amount, fall back to challenge
  *     asset          string   $challenge->asset
- *     network        string   settled-rows prefer SettleResult->network, fall back to challenge
- *     transaction    ?string  null on rejected; null on settled when SettleResult->transaction === ''
+ *     network        string   settled / pending rows prefer SettleResult->network, fall back to challenge
+ *     transaction    ?string  null on rejected and pending; null on settled when SettleResult->transaction === ''
  *     nonce          ?string  EIP-3009 nonce or scheme-specific equivalent
- *     reason         ?string  null on settled; truncated to $reasonMaxLength on rejected
- *     extensions     array    settled = SettleResult->extensions ?? []; rejected = signature->extensions ?? []
+ *     tracker        ?string  facilitator-issued correlation id; populated on pending rows, null otherwise
+ *     reason         ?string  null on settled and pending; truncated to $reasonMaxLength on rejected
+ *     extensions     array    settled / pending = SettleResult->extensions ?? []; rejected = signature->extensions ?? []
  *     meta           array    $context verbatim
- *     settled_at     ?DateTimeImmutable  null on rejected; $now on settled
+ *     settled_at     ?DateTimeImmutable  null on rejected and pending; $now on settled
  *
  * Adopters using Eloquent feed the array straight into
  * `Payment::query()->updateOrCreate(['transaction' => ...], $row)`.
  * Doctrine / PDO callers map the keys to their column names.
+ *
+ * **Pending-row caveat.** `'pending'` rows carry `transaction => null`
+ * — the on-chain hash isn't known yet. Keying `updateOrCreate` on
+ * `transaction` would alias every unresolved pending payment to the
+ * same null slot and silently overwrite earlier rows. Pending rows
+ * MUST be keyed on a discriminating column instead — `nonce` or
+ * `tracker` (both unique per authorization). When the inbound
+ * webhook resolves the row, the adapter rewrites
+ * `status / transaction / settled_at` on the existing pending row
+ * keyed by `nonce` (or `tracker`); only after that point does
+ * `transaction` become a usable upsert key.
  *
  * **Resource source.** The row's `resource` column is `$outcome->resource`
  * verbatim — `DispatchingFacilitator` already formatted it via the
@@ -60,6 +72,15 @@ final readonly class PaymentRowBuilder
 
     public const STATUS_REJECTED = 'rejected';
 
+    /**
+     * Async-settlement in flight. The buyer signed the authorization
+     * but the on-chain transfer has not yet confirmed. Rows in this
+     * state carry a non-null `tracker`, null `transaction`, and null
+     * `settled_at` until the inbound webhook resolves them to
+     * 'settled' / 'rejected'.
+     */
+    public const STATUS_PENDING = 'pending';
+
     public const DEFAULT_REASON_MAX_LENGTH = 255;
 
     /**
@@ -78,6 +99,10 @@ final readonly class PaymentRowBuilder
 
         if ($outcome->kind === PaymentOutcomeKind::SettleSucceeded && $outcome->settle instanceof SettleResult) {
             return self::settledRow($outcome->challenge, $outcome->resource, $outcome->settle, $context, $from, $nonce, $now ?? new DateTimeImmutable());
+        }
+
+        if ($outcome->kind === PaymentOutcomeKind::SettlePending && $outcome->settle instanceof SettleResult) {
+            return self::pendingRow($outcome->challenge, $outcome->resource, $outcome->settle, $context, $from, $nonce);
         }
 
         return self::rejectedRow($outcome, $context, $from, $nonce, $reasonMaxLength);
@@ -121,10 +146,46 @@ final readonly class PaymentRowBuilder
             'network' => $settle->network !== '' ? $settle->network : $challenge->network,
             'transaction' => $settle->transaction !== '' ? $settle->transaction : null,
             'nonce' => $nonce,
+            'tracker' => null,
             'reason' => null,
             'extensions' => $settle->extensions ?? [],
             'meta' => $context,
             'settled_at' => $now,
+        ];
+    }
+
+    /**
+     * Mirrors `settledRow()` for an async-settlement in flight: status
+     * = 'pending', no transaction hash yet, `tracker` populated from the
+     * facilitator-issued SettleResult, `settled_at` null until the
+     * inbound webhook resolves the row.
+     *
+     * @param  array<string, mixed>  $context
+     * @return array<string, mixed>
+     */
+    private static function pendingRow(
+        PaymentRequired $challenge,
+        string $resource,
+        SettleResult $settle,
+        array $context,
+        ?string $from,
+        ?string $nonce,
+    ): array {
+        return [
+            'status' => self::STATUS_PENDING,
+            'resource' => $resource,
+            'payer' => $settle->payer !== '' ? $settle->payer : $from,
+            'pay_to' => $challenge->payTo,
+            'amount' => $settle->amount ?? $challenge->amount,
+            'asset' => $challenge->asset,
+            'network' => $settle->network !== '' ? $settle->network : $challenge->network,
+            'transaction' => null,
+            'nonce' => $nonce,
+            'tracker' => $settle->tracker,
+            'reason' => null,
+            'extensions' => $settle->extensions ?? [],
+            'meta' => $context,
+            'settled_at' => null,
         ];
     }
 
@@ -156,6 +217,7 @@ final readonly class PaymentRowBuilder
             'network' => $challenge->network,
             'transaction' => null,
             'nonce' => $nonce,
+            'tracker' => null,
             'reason' => $reason !== '' ? $reason : null,
             'extensions' => $outcome->signature->extensions ?? [],
             'meta' => $context,
