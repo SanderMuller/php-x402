@@ -5,6 +5,54 @@ All notable changes to `php-x402` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.6.0 - 2026-05-10
+
+### What's new
+
+- **`X402\Facilitator\DispatchingFacilitator`** — wraps any `FacilitatorClient` and surfaces a `PaymentOutcome` to a single `onOutcome` closure on every non-trivial outcome (`VerifyRejected`, `VerifyError`, `SettleSucceeded`, `SettleFailed`, `SettleError`):
+  
+  ```php
+  use X402\Facilitator\DispatchingFacilitator;
+  use X402\Facilitator\PaymentOutcome;
+  use X402\Facilitator\PaymentOutcomeKind;
+  
+  $facilitator = new DispatchingFacilitator(
+      inner: CoinbaseFacilitator::default($psr18Client, $psr17),
+      onOutcome: function (PaymentOutcome $outcome, array $context) use ($events): void {
+          match ($outcome->kind) {
+              PaymentOutcomeKind::SettleSucceeded => $events->dispatch(new PaymentSettled(...)),
+              default                              => $events->dispatch(new PaymentRejected(...)),
+          };
+      },
+      captureContext: fn (): array => ['user_id' => currentUser()?->id, 'ip' => clientIp()],
+      resourceFormatter: fn (string $url): string => $registry->formatResource($url),
+  );
+  
+  ```
+  Three optional ctor closures: `onOutcome` (the listener), `captureContext` (no-arg, returns adopter-supplied context — request user id, IP, trace id — once per outcome), `resourceFormatter` (maps `challenge->resource ?? ''` to the canonical resource string surfaced on `PaymentOutcome::$resource`).
+  
+  Listener / context-capture / formatter exceptions on `*-error` paths are silently swallowed so the original facilitator throwable always propagates to the caller. Hook bugs on the slow path can't mask a transport / network failure that operations need to triage.
+  
+- **`X402\Facilitator\PaymentOutcome`** — snapshot DTO surfaced to the `onOutcome` closure. Carries `kind`, `signature`, `challenge`, `resource`, `reason`, `verify`, `settle`, `exception`. Per-kind population documented on the class — adopters branch on `$outcome->kind` and consume the relevant result field.
+  
+- **`X402\Facilitator\PaymentOutcomeKind`** — string-backed enum (`verify-rejected` / `verify-error` / `settle-succeeded` / `settle-failed` / `settle-error`). Constants `REASON_PREFIX_VERIFY_ERROR` / `REASON_PREFIX_SETTLE_ERROR` for the prefixed reason format. New cases may be added in any minor version (e.g. async-settlement support down the road), so adopters writing `match ($outcome->kind) { ... }` SHOULD include a `default` arm.
+  
+- **`X402\PaymentHistory\PaymentRowBuilder::fromOutcome()`** — static helper that turns a `PaymentOutcome` into a flat array row matching the laravel-x402 `x402_payments` migration shape:
+  
+  ```php
+  use X402\PaymentHistory\PaymentRowBuilder;
+  
+  $row = PaymentRowBuilder::fromOutcome($outcome, $context);
+  // ['status' => 'settled', 'resource' => '...', 'payer' => '0x...', 'amount' => '10000', ...]
+  
+  Payment::query()->updateOrCreate(['transaction' => $row['transaction']], $row);
+  
+  ```
+  Constants: `STATUS_SETTLED`, `STATUS_REJECTED`, `DEFAULT_REASON_MAX_LENGTH = 255`. Reason truncation defaults to 255 chars (matches the migration column width) — without it, a long `*-error` reason exceeds the column and the audit-row write fails after the payment path already failed once. Pass `replayKey: $extracted` from the matched `ReplayKeyExtractor` for scheme-aware nonce / payer extraction; falls back to `PaymentSignature::authorization()` for the EIP-3009 path.
+  
+
+**Full Changelog**: https://github.com/SanderMuller/php-x402/compare/0.5.1...0.6.0
+
 ## 0.5.1 - 2026-05-10
 
 ### Bug fixes
@@ -23,6 +71,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   
   // "Round to the nearest cent" pricing
   PriceParser::toAtomic('0.0000019', 6, truncate: true);  // → '1' (drops the 9)
+  
   
   ```
   `PaymentRequiredBuilder` (test helper) passes `truncate: true` internally — fixture amounts like `'0.0123456789'` keep working there. Production callers reach for `PriceParser::toAtomic()` directly and get the strict defaults.
@@ -48,6 +97,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   );
   
   
+  
   ```
   Ships ~70 default patterns (Agents / Assistants / Scrapers / Search crawlers / Undocumented) sourced from [https://knownagents.com](https://knownagents.com). Override the list with `patterns:`, extend it with `extra:`, or pass `patterns: []` to disable detection. Match is case-insensitive substring on the User-Agent.
   
@@ -64,6 +114,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   $fake->assertVerified();                              // any verify call
   $fake->assertSettled('https://example.test/premium'); // settle for a specific resource
   $fake->assertNothingSettled();                        // no-settle paths
+  
   
   
   ```
@@ -136,6 +187,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
       static fn (string $key, int $ttl): bool
           => (bool) $redis->set($key, '1', ['NX', 'EX' => $ttl]),
   );
+  
   
   
   
