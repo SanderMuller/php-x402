@@ -34,6 +34,7 @@
         "simplito/elliptic-php": "^1.0"
     },
     "require-dev": {
+        "aws/aws-sdk-php": "^3.380",
         "dg/bypass-finals": "^1.9",
         "guzzlehttp/guzzle": "^7.9",
         "guzzlehttp/promises": "^2.0.3",
@@ -60,7 +61,8 @@
     },
     "suggest": {
         "ext-secp256k1": "Native libsecp256k1 binding for ~50x faster signature verification",
-        "ext-gmp": "Required for BigInteger math in signature recovery"
+        "ext-gmp": "Required for BigInteger math in signature recovery",
+        "aws/aws-sdk-php": "Required to use X402\\Client\\AwsKmsWallet (^3.0 — adopters who run with raw private keys or a different KMS do not need this)"
     },
     "autoload": {
         "psr-4": {

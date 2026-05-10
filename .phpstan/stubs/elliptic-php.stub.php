@@ -84,6 +84,16 @@ class EC
     }
 
     /**
+     * @param  string  $pub
+     * @param  string|false  $enc
+     * @return \Elliptic\EC\KeyPair
+     */
+    public function keyFromPublic($pub, $enc = false)
+    {
+        return new \Elliptic\EC\KeyPair($this, '');
+    }
+
+    /**
      * @param  string  $msg
      * @param  array<string, mixed>|\Elliptic\EC\Signature  $signature
      * @param  int  $j
@@ -126,6 +136,14 @@ class KeyPair
     {
         return '';
     }
+
+    /**
+     * @return array{result: bool, reason: string|null}
+     */
+    public function validate()
+    {
+        return ['result' => true, 'reason' => null];
+    }
 }
 
 class Signature
@@ -144,6 +162,15 @@ class Signature
     {
         $this->r = new \BN\BN;
         $this->s = new \BN\BN;
+    }
+
+    /**
+     * @param  string|false  $enc
+     * @return string
+     */
+    public function toDER($enc = false)
+    {
+        return '';
     }
 }
 

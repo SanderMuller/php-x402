@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+use X402\Client\KmsWallet;
 use X402\Client\Wallet;
 use X402\Exceptions\X402Exception;
 use X402\Facilitator\FacilitatorClient;
@@ -70,4 +71,5 @@ arch('concrete classes are final')
     ->toBeFinal()
     ->ignoring([
         X402Exception::class, // base class for InvalidPaymentException etc.
+        KmsWallet::class, // abstract — subclasses (AwsKmsWallet, GcpKmsWallet, …) are final.
     ]);
