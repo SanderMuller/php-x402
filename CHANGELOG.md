@@ -5,6 +5,30 @@ All notable changes to `php-x402` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.4.1 - 2026-05-10
+
+### What's new
+
+- **`X402\Protocol\PaymentSignature::fromArray(array $data): self`** — symmetric to `fromHeader()` but skips the base64 + JSON decode step. Designed for transports that decode the envelope earlier in the pipeline:
+  
+  - JSON-RPC / MCP consumers (`params._meta["x402/payment"]` is already a PHP array by the time the method handler sees it — this lets `laravel-x402-mcp`'s `X402CallTool` / `X402ReadResource` / `X402GetPrompt` delete their private `hydrateSignature()` duplicates).
+  - A2A consumers (`metadata` decoded by the agent transport).
+  - Custom test harnesses that build the envelope as an array.
+  
+  `fromHeader()` now thin-wraps `fromArray()` so the hydration path is single-source — same `accepted` / `extensions` / version-tolerance behaviour, same `InvalidPaymentException` errors on missing-fields, just one input format earlier in the pipeline.
+  
+- **`X402\Support\PriceParser::toAtomic(float|string $amount, int $decimals): string`** — public extraction of the decimal-to-atomic-unit conversion that was previously private inside `X402\Testing\PaymentRequiredBuilder::toAtomicUnits()`. Adapters that need to parse `"0.01"` → `"10000"` for USDC config (laravel-x402's `Support\PriceParser`, future Symfony / Slim / raw-PSR-15 integrations) now share one bcmath-or-string-shift implementation. Prefers `bcmul()` when ext-bcmath is available; falls back to a pure-string decimal shift otherwise. Both paths are exact; neither introduces float rounding. Truncation past `$decimals` is strict (no rounding) so atomic conversions don't silently bump cents.
+  
+  `PaymentRequiredBuilder` now delegates to it — no behaviour change for existing callers.
+  
+- **`X402\Server\IdempotencyKeyBuilder` docblock recommendations** — two pieces of guidance surfaced from `laravel-x402-mcp`'s cache-adapter spec work are now codified in the class docblock:
+  
+  - **Pre-derive scope segments via a transport-specific value object** rather than building the list inline at the call site. JSON-RPC consumers in particular should canonicalise the resource fingerprint (e.g. `sha256` of sort-keys-recursive canonical-JSON for `tools/call` argument bags) so client-side re-serialisation can't split keys across cache entries.
+  - **Set an explicit transport-namespaced `prefix`** in your adapter wiring (`x402:idem:mcp:`, `x402:idem:http:`) when multiple transports share one Redis store. The `DEFAULT_PREFIX` is `x402:idem:` — fine for single-transport deployments, recipe for footgun in mixed.
+  
+
+**Full Changelog**: https://github.com/SanderMuller/php-x402/compare/0.4.0...0.4.1
+
 ## 0.4.0 - 2026-05-09
 
 ### Breaking
@@ -45,6 +69,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
       static fn (string $key, int $ttl): bool
           => (bool) $redis->set($key, '1', ['NX', 'EX' => $ttl]),
   );
+  
   
   
   ```
