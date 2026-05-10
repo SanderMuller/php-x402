@@ -38,6 +38,10 @@ gaps in commit messages.
 | 0.3.0   | `X402\Schemes\ReplayKeyExtractor` opt-in interface; `CallbackNonceStore`; response-header allow-list    |
 | 0.3.1   | Deprecation `warning` log when `PaymentEnforcer` BC fallback for non-RKE EIP-3009 schemes fires        |
 | 0.4.0   | **Mandatory** `ReplayKeyExtractor` for in-process replay protection — BC fallback removed              |
+| 0.5.0   | `X402\Testing\FakeFacilitator` (canonical test double), `X402\Server\BotDetector`, `PaymentSignature::fromArray`, public `PriceParser` |
+| 0.5.1   | `PriceParser::toAtomic()` strict-by-default — reject negative / decimal-overflow / non-strict-shape    |
+| 0.6.0   | `X402\Facilitator\DispatchingFacilitator` (outcome closures), `PaymentOutcome` / `PaymentOutcomeKind`, `PaymentRowBuilder::fromOutcome()` |
+| 0.7.0   | Async settlement (`SettleResult::pending`, 202 path, `SettlePending` outcome), `X402\Webhook\*` primitives, `X402\Client\HdWallet` (BIP-32), `PaymentResponseCacheOptions` DTO |
 
 ---
 

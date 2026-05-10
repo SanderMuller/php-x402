@@ -86,8 +86,10 @@ $response = $client->sendRequest($request);     // 402 → sign → retry → 20
 | Event hooks        | `X402\Facilitator\DispatchingFacilitator` (wraps any FacilitatorClient, fires closures on every outcome) |
 | Outcome DTO        | `X402\Facilitator\PaymentOutcome`, `PaymentOutcomeKind` (enum)     |
 | Payment history    | `X402\PaymentHistory\PaymentRowBuilder` (flat-row helper)          |
+| Webhook primitives | `X402\Webhook\SignatureVerifier`, `WebhookEvent`, `WebhookDedupStore` |
 | Schemes (opt-in)   | `X402\Schemes\ReplayKeyExtractor` (per-scheme replay extraction)   |
 | Signing            | `X402\Schemes\Evm\AuthorizationSigner`, `Eip712Hasher`             |
+| Wallets            | `X402\Client\PrivateKeyWallet`, `X402\Client\HdWallet` (BIP-32)    |
 | Verification       | `X402\Schemes\Evm\SignatureVerifier`                               |
 | Replay store       | `X402\Replay\NonceStoreContract`, `CallbackNonceStore`             |
 | Decimal helper     | `X402\Support\PriceParser`                                         |
@@ -159,7 +161,7 @@ Same Redis-backed PSR-16 store as the nonce store. TTL should comfortably exceed
 
 ## Event hooks and payment history
 
-`DispatchingFacilitator` wraps any `FacilitatorClient` and fires a closure with a `PaymentOutcome` on every verify / settle outcome — `VerifyRejected`, `VerifyError`, `SettleSucceeded`, `SettleFailed`, `SettleError`. Adopters wire host-specific event dispatch (Symfony EventDispatcher, log channels, metrics) inside the closure:
+`DispatchingFacilitator` wraps any `FacilitatorClient` and fires a closure with a `PaymentOutcome` on every verify / settle outcome — `VerifyRejected`, `VerifyError`, `SettleSucceeded`, `SettlePending`, `SettleFailed`, `SettleError`. Adopters wire host-specific event dispatch (Symfony EventDispatcher, log channels, metrics) inside the closure:
 
 ```php
 use X402\Facilitator\DispatchingFacilitator;
@@ -194,7 +196,7 @@ composer ci            # all gates in --dry-run mode (suitable for CI / pre-push
 For adopter integration tests, the `X402\Testing` namespace ships:
 
 - `PaymentRequiredBuilder`: fluent USDC-on-Base / Base-Sepolia helpers, atomic-unit conversion via `X402\Support\PriceParser` (since 0.4.1).
-- `FakeFacilitator`: canonical test double. Settles locally, configures outcomes via `rejectVerify('reason')` / `failSettle('reason')` mid-test, records full signature + challenge payload on every call, and ships PHPUnit assertion helpers (`assertVerified`, `assertSettled`, `assertNothingSettled`).
+- `FakeFacilitator`: canonical test double. Settles locally, configures outcomes via `rejectVerify('reason')` / `failSettle('reason')` mid-test, records every call (signature + challenge + returned `verifyResults()` / `settleResults()`), and ships PHPUnit assertion helpers (`assertVerified`, `assertSettled`, `assertNothingSettled`).
 
 Conformance vectors in `tests/Fixtures/eip712-vectors.json` mirror the upstream Coinbase Go test suite. A hash deviation here is a deviation from the spec.
 
@@ -208,7 +210,7 @@ See [`CHANGELOG.md`](https://github.com/SanderMuller/php-x402/blob/main/CHANGELO
 
 ## Upgrading
 
-See [`UPGRADING.md`](https://github.com/SanderMuller/php-x402/blob/main/UPGRADING.md) for migration notes between minor / major bumps (`0.2.x` → `0.3.0`, `0.3.x` → `0.4.0`).
+See [`UPGRADING.md`](https://github.com/SanderMuller/php-x402/blob/main/UPGRADING.md) for migration notes between minor / major bumps (`0.2.x` → `0.3.0`, `0.3.x` → `0.4.0`, `0.6.x` → `0.7.0`).
 
 ## Contributing
 

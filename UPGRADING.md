@@ -2,6 +2,19 @@
 
 ## From 0.6.x to 0.7.0
 
+### `PaymentEnforcer` returns 202 Accepted when settle is pending
+
+0.7.0 adds an async-settlement path: `SettleResult::pending(tracker: …)` signals the facilitator accepted the authorisation but has not yet produced on-chain confirmation. When `PaymentEnforcer` sees a pending result it returns **202 Accepted** with a pending `PAYMENT-RESPONSE` receipt body and **skips the inner handler** — delivering paid content for an unsettled payment defeats x402.
+
+Behaviour is opt-in from the facilitator side: only adopters whose `FacilitatorClient` returns `SettleResult::pending(...)` see the new path. Synchronous facilitators (the bundled `CoinbaseFacilitator`, `FakeFacilitator`) keep emitting `success: true` / `success: false` and the existing 2xx / 402 flow is unchanged.
+
+Two adopter-visible touchpoints if you wire async settlement:
+
+1. **Pipeline order:** `PaymentResponseCache` does not cache 202 responses — the receipt is pending, so replaying it would surface an unsettled payment as paid. The cache short-circuits when `PaymentResponse::isPending()` is true.
+2. **Event hooks:** `DispatchingFacilitator` fires a `PaymentOutcomeKind::SettlePending` outcome when the inner facilitator returns a pending result. Adopters writing `match ($outcome->kind) { ... }` should add an arm (or rely on the `default` arm — pre-0.7.0 release notes recommended one for forward-compat).
+
+The webhook primitives that close the loop (`X402\Webhook\SignatureVerifier`, `WebhookEvent`, `WebhookDedupStore`) ship in 0.7.0; the inbound route / dedup-store / Laravel-event dispatch lives downstream in `sandermuller/laravel-x402`.
+
 ### `PaymentResponseCache` constructor — optional knobs moved into a `PaymentResponseCacheOptions` DTO
 
 The 10-parameter constructor was unwieldy and adding a further knob was itself a breaking change for positional and named-arg callers. 0.7.0 collapses the six optional parameters (`version`, `ttl`, `prefix`, `logger`, `responseHeadersAllowList`, `resourceResolver`) into a single `PaymentResponseCacheOptions` DTO.
