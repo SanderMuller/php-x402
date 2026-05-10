@@ -2,16 +2,14 @@
 
 Framework-agnostic PHP implementation of the [x402 payment protocol](https://www.x402.org/).
 
-HTTP 402 stablecoin settlement — pay-per-request APIs without subscriptions, API keys, or fiat rails. EIP-3009 `transferWithAuthorization` on EVM chains via the Coinbase facilitator (or any compatible facilitator).
+HTTP 402 stablecoin settlement. Pay-per-request APIs without subscriptions, API keys, or fiat rails. EIP-3009 `transferWithAuthorization` on EVM chains via the Coinbase facilitator (or any compatible facilitator).
 
 > [!NOTE]
-> Pre-1.0 (`0.x`). Public surface is feature-complete for v1 of the spec — HTTP / MCP / A2A transports, `exact` + `upto` schemes on EVM, ERC-7710 shape, SVM pass-through, replay protection, response-cache idempotency, Bazaar discovery. See [`ROADMAP.md`](https://github.com/SanderMuller/php-x402/blob/main/ROADMAP.md) for what's shipped vs. deferred.
+> Pre-1.0 (`0.x`). Public surface is feature-complete for v1 of the spec: HTTP / MCP / A2A transports, `exact` + `upto` schemes on EVM, ERC-7710 shape, SVM pass-through, replay protection, response-cache idempotency, and Bazaar discovery. See [`ROADMAP.md`](https://github.com/SanderMuller/php-x402/blob/main/ROADMAP.md) for what's shipped vs. deferred.
 
 ## What it does
 
-- **Server middleware** — drops a 402 challenge on protected resources, verifies + settles signed payments via a facilitator before the inner handler runs.
-- **Client decorator** — auto-pays 402 responses by signing an EIP-3009 authorization with your operator wallet and retrying.
-- **Framework-agnostic** — pure PSR-7/15/17/18 + PSR-16/3. Wire it into Slim, Mezzio, raw Symfony, or via the Laravel adapter.
+The server middleware drops a 402 challenge on protected resources, verifies and settles signed payments via a facilitator, then hands the request to the inner handler. The client decorator auto-pays 402 responses by signing an EIP-3009 authorization with your operator wallet and retrying. Both pieces are pure PSR-7/15/17/18 + PSR-16/3, so they wire into Slim, Mezzio, raw Symfony, or the Laravel adapter.
 
 ## Install
 
@@ -23,12 +21,12 @@ Requires PHP `^8.2`. Pulls in PSR-7/15/17/18, PSR-16 cache, PSR-3 logger.
 
 Optional extensions for performance:
 
-- `ext-secp256k1` — ~50× faster signature verification.
-- `ext-gmp` — required for BigInteger math in signature recovery.
+- `ext-secp256k1`: ~50× faster signature verification.
+- `ext-gmp`: required for BigInteger math in signature recovery.
 
 ## Quick start
 
-### Server — gate a resource behind 402
+### Server: gate a resource behind 402
 
 ```php
 use X402\Facilitator\CoinbaseFacilitator;
@@ -58,7 +56,7 @@ $middleware = new PaymentEnforcer(
 
 Pipe `$middleware` through any PSR-15 dispatcher.
 
-### Client — pay automatically on 402
+### Client: pay automatically on 402
 
 ```php
 use X402\Client\PayingClient;
@@ -95,7 +93,7 @@ $response = $client->sendRequest($request);     // 402 → sign → retry → 20
 
 ## Composing policy
 
-`PaymentEnforcer` accepts an optional `shouldEnforce` predicate that gates the entire pipeline per request — useful for bot-only payment, IP allowlists, geo policy, or plan-tier exemption:
+`PaymentEnforcer` accepts an optional `shouldEnforce` predicate that gates the entire pipeline per request. Useful for bot-only payment, IP allowlists, geo policy, or plan-tier exemption:
 
 ```php
 use Psr\Http\Message\ServerRequestInterface;
@@ -128,7 +126,7 @@ Override the default list with `patterns:`, extend it with `extra:`, or pass `pa
 
 ## Response-cache idempotency
 
-`PaymentResponseCache` is a separate PSR-15 middleware that sits **before** `PaymentEnforcer` in the chain. It caches paid 2xx responses keyed by `(network, from, nonce, signature bytes)` and replays the cached body on duplicates — closes the "paid but didn't receive content" gap when a client's connection drops between facilitator settle and response delivery.
+`PaymentResponseCache` is a separate PSR-15 middleware that sits **before** `PaymentEnforcer` in the chain. It caches paid 2xx responses keyed by `(network, from, nonce, signature bytes)` and replays the cached body on duplicates, so a client whose connection drops between facilitator settle and response delivery sees the paid response on retry instead of a 402.
 
 ```php
 use X402\Server\PaymentResponseCache;
@@ -145,11 +143,11 @@ Same Redis-backed PSR-16 store as the nonce store. TTL should comfortably exceed
 ## Replay protection
 
 > [!IMPORTANT]
-> Replay protection requires an **atomic** "set-if-absent with TTL" store — Redis `SET key value NX EX ttl` or equivalent. Two concurrent requests carrying the same `(network, from, nonce)` MUST resolve to a single winner; anything else lets a settled signature replay.
+> Replay protection requires an **atomic** "set-if-absent with TTL" store: Redis `SET key value NX EX ttl` or equivalent. Two concurrent requests carrying the same `(network, from, nonce)` MUST resolve to a single winner; anything else lets a settled signature replay.
 >
-> - `InMemoryNonceStore` — **in-process only**, single worker.
-> - `Psr16NonceStore` — `has() + set()` on PSR-16; **NOT atomic** (PSR-16 has no add-if-absent primitive). Acceptable for tests and single-worker dev only. A small race window allows two workers to both claim the same nonce and both settle.
-> - **Production** — use `LaravelNonceStore` (in [`sandermuller/laravel-x402`](https://github.com/sandermuller/laravel-x402), backed by `Cache::add()`), or implement `NonceStoreContract` against Redis `SETNX EX` directly. Anything else breaks the security contract.
+> - `InMemoryNonceStore`: in-process only, single worker.
+> - `Psr16NonceStore`: `has() + set()` on PSR-16. **NOT atomic** (PSR-16 has no add-if-absent primitive). Acceptable for tests and single-worker dev only. A small race window allows two workers to both claim the same nonce and both settle.
+> - Production: use `LaravelNonceStore` (in [`sandermuller/laravel-x402`](https://github.com/sandermuller/laravel-x402), backed by `Cache::add()`), or implement `NonceStoreContract` against Redis `SETNX EX` directly. Anything else breaks the security contract.
 
 ## Framework adapters
 
@@ -166,13 +164,13 @@ composer ci            # all gates in --dry-run mode (suitable for CI / pre-push
 
 For adopter integration tests, the `X402\Testing` namespace ships:
 
-- `PaymentRequiredBuilder` — fluent USDC-on-Base / Base-Sepolia helpers, atomic-unit conversion without bcmath (delegates to `X402\Support\PriceParser` since 0.4.1).
-- `FakeFacilitator` — canonical test double. Settles locally; lets tests configure outcomes via `rejectVerify('reason')` / `failSettle('reason')` mid-test; records full signature + challenge payload on every call; ships PHPUnit assertion helpers (`assertVerified`, `assertSettled`, `assertNothingSettled`, all with optional resource-string filtering).
+- `PaymentRequiredBuilder`: fluent USDC-on-Base / Base-Sepolia helpers, atomic-unit conversion via `X402\Support\PriceParser` (since 0.4.1).
+- `FakeFacilitator`: canonical test double. Settles locally, configures outcomes via `rejectVerify('reason')` / `failSettle('reason')` mid-test, records full signature + challenge payload on every call, and ships PHPUnit assertion helpers (`assertVerified`, `assertSettled`, `assertNothingSettled`).
 
 > [!NOTE]
 > `StubFacilitator` and `RecordingFacilitator` are `@deprecated since 0.5.0` in favour of `FakeFacilitator`, which is a functional superset of both. They stay through 0.5.x and are removed in 0.6.0. Migrate by swapping the import.
 
-Conformance vectors in `tests/Fixtures/eip712-vectors.json` mirror the upstream Coinbase Go test suite — a hash deviation here is a deviation from the spec.
+Conformance vectors in `tests/Fixtures/eip712-vectors.json` mirror the upstream Coinbase Go test suite. A hash deviation here is a deviation from the spec.
 
 ## Roadmap
 
@@ -188,7 +186,7 @@ See [`UPGRADING.md`](https://github.com/SanderMuller/php-x402/blob/main/UPGRADIN
 
 ## Contributing
 
-See [`CONTRIBUTING.md`](https://github.com/SanderMuller/php-x402/blob/main/CONTRIBUTING.md) — boundary rules, QA bar, crypto-stub gotcha, spec-drift policy.
+See [`CONTRIBUTING.md`](https://github.com/SanderMuller/php-x402/blob/main/CONTRIBUTING.md) for boundary rules, the QA bar, the crypto-stub gotcha, and spec-drift policy.
 
 ## Security
 
