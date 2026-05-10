@@ -5,6 +5,83 @@ All notable changes to `php-x402` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.8.0 - 2026-05-10
+
+### What's new
+
+- **`X402\Client\KmsWallet` (abstract).** Owns the three rules from `docs/kms.md`: memoised address derivation from the KMS-provided `SubjectPublicKeyInfo`, EIP-2 low-s normalisation, and recovery-id derivation via brute force against the expected address. Subclasses provide two thin methods:
+  
+  ```php
+  abstract protected function fetchPublicKeySpki(): string;          // binary SPKI DER
+  abstract protected function rawSign(string $digestBytes): string;  // binary signature DER
+  
+  ```
+  The abstract handles the rest — DER decoding, canonical-s flip, `r ‖ s ‖ v` packing — so a new KMS / HSM / remote-signer integration is ~40 LOC instead of the ~250 LOC adopters previously wrote by hand against the 0.7.x `Wallet` interface. The address materialises before the sign call so a `kms:GetPublicKey` failure surfaces before a `kms:Sign` quota is consumed, and the SPKI's 65-byte point is validated against secp256k1 curve membership (catches a misconfigured KMS that returns a syntactically-valid but off-curve payload).
+  
+- **`X402\Client\AwsKmsWallet`.** First-party AWS KMS subclass. Wires `kms:GetPublicKey` and `kms:Sign` with the parameters AWS requires for EVM signing (`MessageType = DIGEST`, `SigningAlgorithm = ECDSA_SHA_256`). Authentication, region selection, retry policy, and the rest of the AWS client configuration live entirely in the `Aws\Kms\KmsClient` instance you pass in — the class is intentionally policy-free.
+  
+  `aws/aws-sdk-php` is in `composer suggest`, not `require` — adopters on raw private keys, HD wallets, or other KMS providers don't carry the dep. Add it explicitly when you want the AWS path:
+  
+  ```bash
+  composer require aws/aws-sdk-php
+  
+  ```
+  Usage:
+  
+  ```php
+  use Aws\Kms\KmsClient;
+  use X402\Client\AwsKmsWallet;
+  use X402\Client\PayingClient;
+  
+  $wallet = new AwsKmsWallet(
+      kms:   new KmsClient(['region' => 'us-east-1', 'version' => 'latest']),
+      keyId: 'arn:aws:kms:us-east-1:123:key/abcd-...',
+  );
+  
+  $client = new PayingClient(inner: $psr18Client, wallet: $wallet);
+  
+  ```
+  The KMS key MUST be `ECC_SECG_P256K1` with usage `SIGN_VERIFY`. Other curves trip a fail-fast `InvalidArgumentException` on the first `address()` call thanks to the strict AlgorithmIdentifier check below.
+  
+- **`X402\Support\Asn1DerDecoder`.** Strict canonical ASN.1 DER parser for the two shapes KMS wallets actually need: ECDSA signatures (`SEQUENCE { r INTEGER, s INTEGER }`) and secp256k1 SubjectPublicKeyInfo. Rejects:
+  
+  - Wrong outer / inner tags.
+  - Negative ASN.1 integers (32-byte INTEGER with the high bit set and no positivity pad).
+  - Non-canonical leading-zero encodings (over-padded INTEGERs).
+  - INTEGER values exceeding 32 bytes.
+  - SPKI AlgorithmIdentifier bytes that aren't the canonical `id-ecPublicKey` + `secp256k1` prefix — wrong-curve KMS keys (P-256, P-384, arbitrary OID) surface up-front instead of as a downstream recovery mismatch.
+  - SPKI BIT STRING contents that aren't a 65-byte `0x04`-prefixed uncompressed point.
+  - Trailing bytes after the outer SEQUENCE.
+  - Truncated length prefixes.
+  
+  Strictness is enforced at the trust boundary rather than papered over downstream — a malformed KMS response is a configuration bug, and the wallet refuses to sign rather than emit a "valid-looking" signature.
+  
+- **`X402\Schemes\Evm\EcdsaRecovery`.** Brute-forces the recovery-id byte for a `(digest, r, s)` triple by recovering the public key under each candidate `v ∈ {27, 28}` and matching the derived address against the expected signer. Throws when neither candidate resolves — the KMS signature does not belong to the configured public key. Reach for it from any KMS-backed `Wallet`; pure-PHP signers like `PrivateKeyWallet` get the recovery id directly from simplito.
+  
+- **Wallet conformance test suite.** `tests/Unit/Client/WalletConformanceTest.php` is a dataset-driven harness. Every `Wallet` implementation gets a row; every row must satisfy:
+  
+  - EIP-2 canonical low-s for any digest.
+  - Deterministic signing (RFC 6979) — same digest twice → same signature byte-for-byte.
+  - Signature recovers to the wallet's address.
+  - `v ∈ {27, 28}`.
+  - Signature is `0x` + 130 hex chars; address is `0x` + 40 hex chars.
+  
+  New `Wallet` subclasses add a row in the dataset; bespoke implementation-specific tests stay focused on implementation-specific edge cases. This is the gap that let the high-s bug below live undetected for six releases — the prior tests only asserted *recovery*, not *canonicality*.
+  
+
+### Bug fixes
+
+- **`SignatureExporter::toHex65` now enforces EIP-2 canonical low-s for every emitted signature.** `PrivateKeyWallet` and `HdWallet` relied on simplito's `canonical: true` option to keep `s` in the low half of the curve order. That option is silently dropped when called via `KeyPair::sign($enc = false, $options = ['canonical' => true])` — `EC::sign`'s first branch swaps the args when `$enc` isn't a string and clobbers the options. ~50% of digests therefore produced high-s signatures that EIP-2-enforcing contracts (USDC's `transferWithAuthorization`, OpenZeppelin's `ECDSA.recover`, and most modern verifiers) reject silently. `SignatureExporter` now flips `s` to `n - s` and parity-toggles the recovery byte when `s > n / 2`, regardless of what the underlying signer emits. Recovery still resolves to the same address; the raw `s` and `v` bytes differ for what used to be the high-s half.
+
+### Breaking changes
+
+- **Signature `s` / `v` bytes change for ~50% of digests** as a consequence of the EIP-2 low-s fix. Adopters who pinned signature output byte-for-byte in their test suite (`expect($wallet->signDigest(...))->toBe('0x…')`) will need to re-generate those fixtures or replace the assertion with a recovery + low-s check. The wire format is identical; the recovered address is identical; only the canonical-s representation has changed. Marked breaking because byte-output is part of the observed contract for some adopters.
+  
+- **`X402\Support\Asn1DerDecoder` rejects non-canonical DER**. If you wrote a custom adapter that called `decodeSignature()` against a non-strict-DER blob — over-padded INTEGER, ASN.1-negative INTEGER, wrong AlgorithmIdentifier OID — it now throws `InvalidArgumentException` instead of silently decoding. Real KMSes emit canonical DER, so production paths are unaffected.
+  
+
+**Full Changelog**: https://github.com/SanderMuller/php-x402/compare/0.7.0...0.8.0
+
 ## 0.7.0 - 2026-05-10
 
 ### What's new
@@ -66,6 +143,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   +    ),
    );
   
+  
   ```
   Full migration steps in [`UPGRADING.md`](https://github.com/SanderMuller/php-x402/blob/main/UPGRADING.md#from-06x-to-070).
   
@@ -98,6 +176,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   );
   
   
+  
   ```
   Three optional ctor closures: `onOutcome` (the listener), `captureContext` (no-arg, returns adopter-supplied context — request user id, IP, trace id — once per outcome), `resourceFormatter` (maps `challenge->resource ?? ''` to the canonical resource string surfaced on `PaymentOutcome::$resource`).
   
@@ -116,6 +195,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   // ['status' => 'settled', 'resource' => '...', 'payer' => '0x...', 'amount' => '10000', ...]
   
   Payment::query()->updateOrCreate(['transaction' => $row['transaction']], $row);
+  
   
   
   ```
@@ -145,6 +225,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   
   
   
+  
   ```
   `PaymentRequiredBuilder` (test helper) passes `truncate: true` internally — fixture amounts like `'0.0123456789'` keep working there. Production callers reach for `PriceParser::toAtomic()` directly and get the strict defaults.
   
@@ -171,6 +252,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   
   
   
+  
   ```
   Ships ~70 default patterns (Agents / Assistants / Scrapers / Search crawlers / Undocumented) sourced from [https://knownagents.com](https://knownagents.com). Override the list with `patterns:`, extend it with `extra:`, or pass `patterns: []` to disable detection. Match is case-insensitive substring on the User-Agent.
   
@@ -187,6 +269,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   $fake->assertVerified();                              // any verify call
   $fake->assertSettled('https://example.test/premium'); // settle for a specific resource
   $fake->assertNothingSettled();                        // no-settle paths
+  
   
   
   
@@ -261,6 +344,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
       static fn (string $key, int $ttl): bool
           => (bool) $redis->set($key, '1', ['NX', 'EX' => $ttl]),
   );
+  
   
   
   
