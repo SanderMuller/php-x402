@@ -33,7 +33,6 @@ Optional extensions for performance:
 ```php
 use X402\Facilitator\CoinbaseFacilitator;
 use X402\Protocol\PaymentRequired;
-use X402\Replay\Psr16NonceStore;
 use X402\Schemes\Evm\ExactScheme;
 use X402\Server\PaymentEnforcer;
 use X402\Server\StaticPriceTable;
@@ -77,18 +76,22 @@ $response = $client->sendRequest($request);     // 402 → sign → retry → 20
 
 ## Surface
 
-| Layer             | Class                                                  |
-|-------------------|--------------------------------------------------------|
-| Server middleware | `X402\Server\PaymentEnforcer` (PSR-15)                 |
-| Response cache    | `X402\Server\PaymentResponseCache` (PSR-15)            |
-| Price table       | `X402\Server\StaticPriceTable`, `RegexPriceTable`      |
-| Client decorator  | `X402\Client\PayingClient` (PSR-18)                    |
-| Facilitator       | `X402\Facilitator\CoinbaseFacilitator`                 |
-| Signing           | `X402\Schemes\Evm\AuthorizationSigner`                 |
-| Verification      | `X402\Schemes\Evm\SignatureVerifier`                   |
-| Replay store      | `X402\Replay\NonceStoreContract` (atomic SETNX EX in prod) |
-| Testing helpers   | `X402\Testing\PaymentRequiredBuilder`, `StubFacilitator` |
-| CLI               | `bin/x402 decode <header>`                             |
+| Layer              | Class                                                              |
+|--------------------|--------------------------------------------------------------------|
+| Server middleware  | `X402\Server\PaymentEnforcer` (PSR-15)                             |
+| Response cache     | `X402\Server\PaymentResponseCache` (PSR-15)                        |
+| Price table        | `X402\Server\StaticPriceTable`, `RegexPriceTable`                  |
+| Bot detection      | `X402\Server\BotDetector`                                          |
+| Idempotency key    | `X402\Server\IdempotencyKeyBuilder` (transport-agnostic)           |
+| Client decorator   | `X402\Client\PayingClient` (PSR-18)                                |
+| Facilitator        | `X402\Facilitator\CoinbaseFacilitator`                             |
+| Schemes (opt-in)   | `X402\Schemes\ReplayKeyExtractor` (per-scheme replay extraction)   |
+| Signing            | `X402\Schemes\Evm\AuthorizationSigner`, `Eip712Hasher`             |
+| Verification       | `X402\Schemes\Evm\SignatureVerifier`                               |
+| Replay store       | `X402\Replay\NonceStoreContract`, `CallbackNonceStore`             |
+| Decimal helper     | `X402\Support\PriceParser`                                         |
+| Testing helpers    | `X402\Testing\PaymentRequiredBuilder`, `FakeFacilitator`           |
+| CLI                | `bin/x402 decode <header>`                                         |
 
 ## Composing policy
 
@@ -161,7 +164,13 @@ composer qa            # rector + pint + phpstan (auto-fix variants)
 composer ci            # all gates in --dry-run mode (suitable for CI / pre-push)
 ```
 
-For adopter integration tests, the `X402\Testing` namespace ships a fluent `PaymentRequiredBuilder` (USDC-on-Base / Base-Sepolia helpers, atomic-unit conversion without bcmath), a `StubFacilitator` that settles locally, and a `RecordingFacilitator` for assertion.
+For adopter integration tests, the `X402\Testing` namespace ships:
+
+- `PaymentRequiredBuilder` — fluent USDC-on-Base / Base-Sepolia helpers, atomic-unit conversion without bcmath (delegates to `X402\Support\PriceParser` since 0.4.1).
+- `FakeFacilitator` — canonical test double. Settles locally; lets tests configure outcomes via `rejectVerify('reason')` / `failSettle('reason')` mid-test; records full signature + challenge payload on every call; ships PHPUnit assertion helpers (`assertVerified`, `assertSettled`, `assertNothingSettled`, all with optional resource-string filtering).
+
+> [!NOTE]
+> `StubFacilitator` and `RecordingFacilitator` are `@deprecated since 0.5.0` in favour of `FakeFacilitator`, which is a functional superset of both. They stay through 0.5.x and are removed in 0.6.0. Migrate by swapping the import.
 
 Conformance vectors in `tests/Fixtures/eip712-vectors.json` mirror the upstream Coinbase Go test suite — a hash deviation here is a deviation from the spec.
 
@@ -172,6 +181,10 @@ See [`ROADMAP.md`](https://github.com/SanderMuller/php-x402/blob/main/ROADMAP.md
 ## Changelog
 
 See [`CHANGELOG.md`](https://github.com/SanderMuller/php-x402/blob/main/CHANGELOG.md). Updated automatically from GitHub release notes.
+
+## Upgrading
+
+See [`UPGRADING.md`](https://github.com/SanderMuller/php-x402/blob/main/UPGRADING.md) for migration notes between minor / major bumps (`0.2.x` → `0.3.0`, `0.3.x` → `0.4.0`).
 
 ## Contributing
 
