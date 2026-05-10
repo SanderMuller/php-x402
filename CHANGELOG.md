@@ -5,6 +5,46 @@ All notable changes to `php-x402` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.5.0 - 2026-05-10
+
+### What's new
+
+- **`X402\Server\BotDetector`** — curated User-Agent matcher for bot-only-payment endpoints. Wires straight into `PaymentEnforcer`'s `shouldEnforce` predicate:
+  
+  ```php
+  use X402\Server\BotDetector;
+  
+  $detector = new BotDetector(extra: ['MyCustomCrawler']);
+  
+  $middleware = new PaymentEnforcer(
+      // ...
+      shouldEnforce: static fn ($request): bool
+          => $detector->isBot($request->getHeaderLine('User-Agent')),
+  );
+  
+  ```
+  Ships ~70 default patterns (Agents / Assistants / Scrapers / Search crawlers / Undocumented) sourced from [https://knownagents.com](https://knownagents.com). Override the list with `patterns:`, extend it with `extra:`, or pass `patterns: []` to disable detection. Match is case-insensitive substring on the User-Agent.
+  
+- **`X402\Testing\FakeFacilitator`** — canonical test double, functional superset of the existing `StubFacilitator` (configurable outcomes) and `RecordingFacilitator` (call capture). One instance covers both:
+  
+  ```php
+  $fake = new FakeFacilitator();
+  
+  // Tweak outcomes mid-test
+  $fake->rejectVerify('insufficient-funds');
+  $fake->failSettle('on-chain-revert');
+  
+  // Run the system under test, then assert
+  $fake->assertVerified();                              // any verify call
+  $fake->assertSettled('https://example.test/premium'); // settle for a specific resource
+  $fake->assertNothingSettled();                        // no-settle paths
+  
+  ```
+  Records full signature + challenge payload per call (not just counts) — accessible via `verifyCalls()` / `settleCalls()` for custom assertions. The `assert*()` helpers use `PHPUnit\Framework\Assert`; php-x402 already pulls phpunit transitively via `pestphp/pest` in dev, so this is available wherever you run a Pest or PHPUnit suite.
+  
+
+**Full Changelog**: https://github.com/SanderMuller/php-x402/compare/0.4.1...0.5.0
+
 ## 0.4.1 - 2026-05-10
 
 ### What's new
@@ -69,6 +109,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
       static fn (string $key, int $ttl): bool
           => (bool) $redis->set($key, '1', ['NX', 'EX' => $ttl]),
   );
+  
   
   
   
