@@ -8,6 +8,7 @@ use JsonException;
 use Psr\Http\Client\ClientExceptionInterface;
 use Psr\Http\Client\ClientInterface;
 use Psr\Http\Message\RequestFactoryInterface;
+use Psr\Http\Message\RequestInterface;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\StreamFactoryInterface;
 use X402\Exceptions\FacilitatorException;
@@ -111,13 +112,9 @@ final readonly class CoinbaseFacilitator implements FacilitatorClient
     {
         try {
             $url = rtrim($this->baseUrl, '/') . '/discovery/resources?' . http_build_query($query->toQueryParams());
-            $request = $this->requestFactory
+            $request = $this->applyDefaultHeaders($this->requestFactory
                 ->createRequest('GET', $url)
-                ->withHeader('Accept', 'application/json');
-
-            foreach ($this->defaultHeaders as $name => $value) {
-                $request = $request->withHeader($name, $value);
-            }
+                ->withHeader('Accept', 'application/json'));
 
             $response = $this->http->sendRequest($request);
         } catch (ClientExceptionInterface $clientException) {
@@ -131,37 +128,10 @@ final readonly class CoinbaseFacilitator implements FacilitatorClient
 
         $items = [];
         foreach ($itemsRaw as $entry) {
-            if (! is_array($entry)) {
-                continue;
+            if (is_array($entry)) {
+                /** @var array<string, mixed> $entry */
+                $items[] = $this->parseDiscoveryItem($entry);
             }
-
-            /** @var array<string, mixed> $entry */
-            $accepts = [];
-            if (is_array($entry['accepts'] ?? null)) {
-                foreach ($entry['accepts'] as $accept) {
-                    if (is_array($accept)) {
-                        /** @var array<string, mixed> $accept */
-                        $accepts[] = $accept;
-                    }
-                }
-            }
-
-            $discoveryInfo = null;
-            if (is_array($entry['discoveryInfo'] ?? null)) {
-                /** @var array<string, mixed> $infoRaw */
-                $infoRaw = $entry['discoveryInfo'];
-                $discoveryInfo = $infoRaw;
-            }
-
-            $items[] = new DiscoveryResource(
-                resource: JsonReader::stringOrNull($entry, 'resource') ?? '',
-                type: JsonReader::stringOrNull($entry, 'type') ?? '',
-                x402Version: JsonReader::int($entry, 'x402Version', default: 2),
-                accepts: $accepts,
-                lastUpdated: JsonReader::stringOrNull($entry, 'lastUpdated'),
-                metadata: JsonReader::arrayOrEmpty($entry, 'metadata'),
-                discoveryInfo: $discoveryInfo,
-            );
         }
 
         /** @var array<string, mixed> $pagination */
@@ -176,13 +146,9 @@ final readonly class CoinbaseFacilitator implements FacilitatorClient
     public function supported(): SupportedKinds
     {
         try {
-            $request = $this->requestFactory
+            $request = $this->applyDefaultHeaders($this->requestFactory
                 ->createRequest('GET', rtrim($this->baseUrl, '/') . '/supported')
-                ->withHeader('Accept', 'application/json');
-
-            foreach ($this->defaultHeaders as $name => $value) {
-                $request = $request->withHeader($name, $value);
-            }
+                ->withHeader('Accept', 'application/json'));
 
             $response = $this->http->sendRequest($request);
         } catch (ClientExceptionInterface $clientException) {
@@ -229,15 +195,11 @@ final readonly class CoinbaseFacilitator implements FacilitatorClient
     private function call(string $path, array $payload): array
     {
         try {
-            $request = $this->requestFactory
+            $request = $this->applyDefaultHeaders($this->requestFactory
                 ->createRequest('POST', rtrim($this->baseUrl, '/') . $path)
                 ->withHeader('Content-Type', 'application/json')
                 ->withHeader('Accept', 'application/json')
-                ->withBody($this->streamFactory->createStream(json_encode($payload, JSON_THROW_ON_ERROR)));
-
-            foreach ($this->defaultHeaders as $name => $value) {
-                $request = $request->withHeader($name, $value);
-            }
+                ->withBody($this->streamFactory->createStream(json_encode($payload, JSON_THROW_ON_ERROR))));
 
             $response = $this->http->sendRequest($request);
         } catch (ClientExceptionInterface|JsonException $e) {
@@ -245,6 +207,43 @@ final readonly class CoinbaseFacilitator implements FacilitatorClient
         }
 
         return $this->decode($response, $path);
+    }
+
+    private function applyDefaultHeaders(RequestInterface $request): RequestInterface
+    {
+        foreach ($this->defaultHeaders as $name => $value) {
+            $request = $request->withHeader($name, $value);
+        }
+
+        return $request;
+    }
+
+    /**
+     * @param  array<string, mixed>  $entry
+     */
+    private function parseDiscoveryItem(array $entry): DiscoveryResource
+    {
+        $accepts = [];
+        foreach (JsonReader::arrayOrEmpty($entry, 'accepts') as $accept) {
+            if (is_array($accept)) {
+                /** @var array<string, mixed> $accept */
+                $accepts[] = $accept;
+            }
+        }
+
+        $discoveryInfoRaw = $entry['discoveryInfo'] ?? null;
+        /** @var array<string, mixed>|null $discoveryInfo */
+        $discoveryInfo = is_array($discoveryInfoRaw) ? $discoveryInfoRaw : null;
+
+        return new DiscoveryResource(
+            resource: JsonReader::stringOrNull($entry, 'resource') ?? '',
+            type: JsonReader::stringOrNull($entry, 'type') ?? '',
+            x402Version: JsonReader::int($entry, 'x402Version', default: 2),
+            accepts: $accepts,
+            lastUpdated: JsonReader::stringOrNull($entry, 'lastUpdated'),
+            metadata: JsonReader::arrayOrEmpty($entry, 'metadata'),
+            discoveryInfo: $discoveryInfo,
+        );
     }
 
     /**

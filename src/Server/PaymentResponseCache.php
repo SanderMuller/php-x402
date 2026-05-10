@@ -115,6 +115,14 @@ final readonly class PaymentResponseCache implements MiddlewareInterface
 
     private LoggerInterface $logger;
 
+    private Version $version;
+
+    private int $ttl;
+
+    private string $prefix;
+
+    private Closure|ResourceResolver|null $resourceResolver;
+
     /** @var array<string, ReplayKeyExtractor> */
     private array $extractors;
 
@@ -123,21 +131,20 @@ final readonly class PaymentResponseCache implements MiddlewareInterface
 
     /**
      * @param  array<string, SchemeContract>  $schemes  Same map you wire into PaymentEnforcer. Entries that implement `ReplayKeyExtractor` (Evm `ExactScheme` / `Permit2Scheme`, `UptoEvmScheme`) get cache keying. Entries that don't (`Erc7710Scheme`, Stellar / Svm `ExactScheme`) are kept out of the internal extractor map so requests routed to them simply fall through to the inner handler with a `debug` log line — passing the full enforcer map is the supported path.
-     * @param  list<string>  $responseHeadersAllowList  Response header names retained in the cached snapshot. Compared case-insensitively. Override the default to keep app-specific headers (e.g. CORS); the hard-block list (`set-cookie`, `authorization`, …) is enforced regardless.
-     * @param  Closure(ServerRequestInterface): string|ResourceResolver|null  $resourceResolver  Optional. Resolves a request to the cache-identity string mixed into the response-cache key alongside HTTP method. Default = `$request->getUri()->getPath()` (matches `PaymentEnforcer`'s default; a paid retry on the same URI hits the cache). Pass a custom resolver only when you want pricing-equivalent URIs to also share cached responses — the trade-off: any URI the resolver collapses will replay the SAME cached body, which is correct for paid endpoints whose response is fully determined by the resolved resource (e.g. `/api/v1/premium` and `/api/v2/premium` returning identical bytes), but wrong when those URIs return different content. When in doubt, leave this null — pricing-collapse and content-collapse are different invariants.
+     * @param  PaymentResponseCacheOptions  $options  Optional knobs (`version`, `ttl`, `prefix`, `logger`, `responseHeadersAllowList`, `resourceResolver`). See `PaymentResponseCacheOptions` for per-field docs. Resource-resolver trade-off: any URI the resolver collapses will replay the SAME cached body, which is correct for paid endpoints whose response is fully determined by the resolved resource (e.g. `/api/v1/premium` and `/api/v2/premium` returning identical bytes), but wrong when those URIs return different content. When in doubt, leave the resolver default — pricing-collapse and content-collapse are different invariants.
      */
     public function __construct(
         private CacheInterface $cache,
         private ResponseFactoryInterface $responseFactory,
         private StreamFactoryInterface $streamFactory,
         array $schemes,
-        private Version $version = Version::V1,
-        private int $ttl = 3600,
-        private string $prefix = 'x402:idem:',
-        ?LoggerInterface $logger = null,
-        array $responseHeadersAllowList = self::DEFAULT_RESPONSE_HEADER_ALLOWLIST,
-        private Closure|ResourceResolver|null $resourceResolver = null,
+        PaymentResponseCacheOptions $options = new PaymentResponseCacheOptions(),
     ) {
+        $this->version = $options->version;
+        $this->ttl = $options->ttl;
+        $this->prefix = $options->prefix;
+        $this->resourceResolver = $options->resourceResolver;
+
         // Filter to ReplayKeyExtractors silently. Adopters typically
         // pass the same map they wire into PaymentEnforcer, which can
         // legitimately include non-RKE schemes (Erc7710, Stellar, Svm)
@@ -159,11 +166,11 @@ final readonly class PaymentResponseCache implements MiddlewareInterface
         // that overlaps the hard-block set so the hard-block can never
         // be opted out of.
         $this->allowedHeadersLower = array_values(array_diff(
-            array_unique(array_map(strtolower(...), $responseHeadersAllowList)),
+            array_unique(array_map(strtolower(...), $options->responseHeadersAllowList)),
             self::HARD_BLOCKED_HEADERS,
         ));
 
-        $this->logger = $logger ?? new NullLogger();
+        $this->logger = $options->logger ?? new NullLogger();
     }
 
     /**

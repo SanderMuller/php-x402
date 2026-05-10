@@ -133,10 +133,15 @@ Override the default list with `patterns:`, extend it with `extra:`, or pass `pa
 
 ```php
 use X402\Server\PaymentResponseCache;
+use X402\Server\PaymentResponseCacheOptions;
 
 // Pipeline: PaymentResponseCache → PaymentEnforcer → handler
 $pipeline = [
-    new PaymentResponseCache($psr16Cache, $psr17, $psr17, schemes: ['exact' => new ExactScheme()], ttl: 3600),
+    new PaymentResponseCache(
+        $psr16Cache, $psr17, $psr17,
+        schemes: ['exact' => new ExactScheme()],
+        options: new PaymentResponseCacheOptions(ttl: 3600),
+    ),
     $enforcer,
 ];
 ```

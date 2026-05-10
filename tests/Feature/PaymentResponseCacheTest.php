@@ -18,6 +18,7 @@ use X402\Schemes\Evm\Permit2Scheme;
 use X402\Schemes\SchemeContract;
 use X402\Server\IdempotencyKeyBuilder;
 use X402\Server\PaymentResponseCache;
+use X402\Server\PaymentResponseCacheOptions;
 
 final class IdempotencyArrayCache implements CacheInterface
 {
@@ -391,7 +392,7 @@ it('warns and skips cache when scheme is registered but extractor cannot parse t
         responseFactory: $factory,
         streamFactory: $factory,
         schemes: ['exact' => new ExactScheme()], // wrong extractor for Permit2 payloads
-        logger: $logger,
+        options: new PaymentResponseCacheOptions(logger: $logger),
     );
     $handler = new CountingHandler(new PsrResponse(200));
 
@@ -442,7 +443,7 @@ it('does not emit warning-level logs from public traffic (drift signal stays at 
         responseFactory: $factory,
         streamFactory: $factory,
         schemes: ['exact' => new ExactScheme()],
-        logger: $logger,
+        options: new PaymentResponseCacheOptions(logger: $logger),
     );
     $handler = new CountingHandler(new PsrResponse(200));
 
@@ -521,7 +522,9 @@ it('hard-blocks Set-Cookie even when caller adds it to the allow-list', function
         responseFactory: $factory,
         streamFactory: $factory,
         schemes: ['exact' => new ExactScheme()],
-        responseHeadersAllowList: ['Content-Type', 'Set-Cookie', 'Authorization'], // attacker / mistake
+        options: new PaymentResponseCacheOptions(
+            responseHeadersAllowList: ['Content-Type', 'Set-Cookie', 'Authorization'], // attacker / mistake
+        ),
     );
 
     $paid = new PsrResponse(
@@ -548,7 +551,9 @@ it('honours an extended allow-list for app-specific headers (e.g. ETag)', functi
         responseFactory: $factory,
         streamFactory: $factory,
         schemes: ['exact' => new ExactScheme()],
-        responseHeadersAllowList: [...PaymentResponseCache::DEFAULT_RESPONSE_HEADER_ALLOWLIST, 'X-Request-Id'],
+        options: new PaymentResponseCacheOptions(
+            responseHeadersAllowList: [...PaymentResponseCache::DEFAULT_RESPONSE_HEADER_ALLOWLIST, 'X-Request-Id'],
+        ),
     );
 
     $paid = new PsrResponse(
@@ -951,7 +956,7 @@ it('uses the configured resourceResolver so cache scoping aligns with PaymentEnf
         responseFactory: $factory,
         streamFactory: $factory,
         schemes: ['exact' => new ExactScheme()],
-        resourceResolver: $resolver,
+        options: new PaymentResponseCacheOptions(resourceResolver: $resolver),
     );
 
     $signature = new PaymentSignature(

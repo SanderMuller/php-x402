@@ -1,5 +1,35 @@
 # Upgrading
 
+## From 0.6.x to 0.7.0
+
+### `PaymentResponseCache` constructor — optional knobs moved into a `PaymentResponseCacheOptions` DTO
+
+The 10-parameter constructor was unwieldy and adding a further knob was itself a breaking change for positional and named-arg callers. 0.7.0 collapses the six optional parameters (`version`, `ttl`, `prefix`, `logger`, `responseHeadersAllowList`, `resourceResolver`) into a single `PaymentResponseCacheOptions` DTO.
+
+The four required arguments (`cache`, `responseFactory`, `streamFactory`, `schemes`) are unchanged. Only callers that passed any of the six optional knobs need to update.
+
+```diff
+ use X402\Server\PaymentResponseCache;
++use X402\Server\PaymentResponseCacheOptions;
+
+ $cache = new PaymentResponseCache(
+     cache:           $psr16,
+     responseFactory: $psr17,
+     streamFactory:   $psr17,
+     schemes:         ['exact' => new ExactScheme()],
+-    ttl:             7200,
+-    prefix:          'app:idem:',
+-    logger:          $logger,
++    options: new PaymentResponseCacheOptions(
++        ttl:    7200,
++        prefix: 'app:idem:',
++        logger: $logger,
++    ),
+ );
+```
+
+Callers passing zero optional knobs (just the four required arguments) need no change. The `DEFAULT_RESPONSE_HEADER_ALLOWLIST` and `PARSED_SIGNATURE_ATTR` constants stay on `PaymentResponseCache`; reference them as before.
+
 ## From 0.3.x to 0.4.0
 
 ### `PaymentResponseCache` cache-key format changed — purge or accept a one-time miss window
