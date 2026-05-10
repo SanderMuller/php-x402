@@ -5,6 +5,75 @@ All notable changes to `php-x402` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.7.0 - 2026-05-10
+
+### What's new
+
+- **Async settlement path on `SettleResult` and `PaymentEnforcer`.** New `SettleResult::pending(tracker: …)` factory and `isPending()` predicate, plus a constructor invariant that rejects the contradictory shape (`success: true` together with a non-empty tracker). `PaymentEnforcer` now returns **202 Accepted** with a pending `PAYMENT-RESPONSE` receipt body and **skips the inner handler** when the facilitator returns a pending result — delivering paid content for an unsettled payment defeats x402. The path is opt-in from the facilitator side: the bundled synchronous facilitators (`CoinbaseFacilitator`, `FakeFacilitator`) keep emitting `success: true` / `success: false` and the existing 2xx / 402 flow is byte-identical.
+  
+- **`X402\Webhook\*` primitives.** The upstream surfaces required to verify the inbound notification that confirms an async settlement:
+  
+  - `WebhookEvent` — value object carrying `id`, `tracker`, `status`, `transaction`, `network`, `payer`, `amount`, raw `meta`, and `signedAt`.
+  - `WebhookStatus` — string-backed enum with the canonical statuses plus an `Unknown` fallback (forward-compatible — adopters never crash on a status the facilitator added later).
+  - `SignatureVerifier` — Stripe-style `t=<unix>,v1=<hmac>` header verification with `hash_equals`, strict-integer timestamp parse, and a configurable clock-skew window. Rejects malformed headers, mismatched secrets, tampered bodies, and replays outside the skew window.
+  - `WebhookDedupStore` — interface for the "claim webhook id once" guarantee. Concrete Redis / cache-backed implementations ship downstream in `sandermuller/laravel-x402` alongside the inbound route and Laravel-event dispatch.
+  - `InvalidWebhookException` + `InvalidWebhookSignatureException` for adopters to branch on at the handler boundary.
+  
+- **`PaymentOutcomeKind::SettlePending` + `DispatchingFacilitator` routing.** Outcome closures see the new kind when the wrapped facilitator returns a pending result. `SettlePending` takes precedence over `SettleFailed` when the tracker is non-empty, so the audit row reflects the actual disposition rather than a misleading failure. `PaymentRowBuilder::pendingRow()` produces a `STATUS_PENDING` row with `transaction: null` and the tracker populated; the `tracker` column is added uniformly to settled / rejected / pending rows.
+  
+- **`PaymentResponseCache` is pending-aware.** Reads `PaymentResponse::isPending()` directly off the wire and skips caching the 202 response — replaying a pending receipt would surface an unsettled payment as paid. Lost-receipt tradeoff (a dropped 202 in flight cannot be replayed from the cache) is documented inline. Synchronous 200s with non-pending receipts are unaffected.
+  
+- **`X402\Client\HdWallet` — BIP-32 hierarchical-deterministic wallet.** A per-process root key derives unlimited child wallets along the standard EVM path `m/44'/60'/0'/0/N` (or any custom path). Signs EIP-712 typed data exactly like `PrivateKeyWallet` — produced signatures recover to the HD-derived address, byte-for-byte identical to a fresh `PrivateKeyWallet` initialised with the same derived key. Verified against the BIP-32 published test vectors (8 entries pinned in `tests/Fixtures/bip32-vectors.json`).
+  
+  Use case: per-tenant signing keys in framework adapters. The HD root sits in env / KMS; child wallets are derived deterministically per tenant id, so adopters never persist a per-tenant key. The Laravel-side `TenantHdWalletResolver` wiring lands in `sandermuller/laravel-x402` next.
+  
+  Rejects malformed input: seeds shorter than 128 bits or longer than 512 bits, odd-length hex, non-hex chars, empty / malformed paths (`m/`, `m//`, non-numeric components, mixed-apostrophe placement, child index ≥ 2^31). `xprv` / `xpub` import/export is deferred to a follow-up minor on adopter pull.
+  
+
+### Maintainability pass
+
+- **`PaymentResponseCache` constructor — optional knobs moved into `PaymentResponseCacheOptions`.** See "Breaking changes" below. The required arguments are unchanged; only callers that passed any of the six optional knobs (`version`, `ttl`, `prefix`, `logger`, `responseHeadersAllowList`, `resourceResolver`) need to update.
+  
+- **`CoinbaseFacilitator` hygiene.** Three duplicated `defaultHeaders` foreach loops collapse into `applyDefaultHeaders()`. The 33-line, 3-level-nested discovery item parser extracts into `parseDiscoveryItem()`, leaving `discoverResources()` six lines.
+  
+- **38 new tests for previously-untested public API.** `PayingClient` (11 cases — pass-through, v1 / v2 wire negotiation precedence, error paths, EIP-712 domain resolution and fallback) and `PaymentIdentifier` (27 cases — generate / isValid / extractId / isRequired / wire envelopes). Also explicit per-method tests for the refactored `CoinbaseFacilitator::discoverResources()` and `supported()` so the extracted helpers stop relying on transitive coverage.
+  
+- **`X402\Support\Hex` consolidates four duplicated `hex2binStrict` copies** across the scheme classes into one helper. No behaviour change.
+  
+- **`FakeFacilitator::verifyResults()` / `settleResults()`.** Recording arrays indexed in lockstep with `verifyCalls()` / `settleCalls()`. Useful for tests that toggle `rejectVerify('reason-A')` mid-flight and need to confirm the right reason landed on the right call, or for verifying tracker propagation through the pending path.
+  
+
+### Breaking changes
+
+- **`PaymentResponseCache` constructor — six optional knobs moved into a `PaymentResponseCacheOptions` DTO.** The 10-parameter constructor was unwieldy and adding any further knob was itself a breaking change for positional and named-arg callers. Required arguments (`cache`, `responseFactory`, `streamFactory`, `schemes`) are unchanged. Migration:
+  
+  ```diff
+   use X402\Server\PaymentResponseCache;
+  +use X402\Server\PaymentResponseCacheOptions;
+  
+   $cache = new PaymentResponseCache(
+       cache:           $psr16,
+       responseFactory: $psr17,
+       streamFactory:   $psr17,
+       schemes:         ['exact' => new ExactScheme()],
+  -    ttl:             7200,
+  -    prefix:          'app:idem:',
+  -    logger:          $logger,
+  +    options: new PaymentResponseCacheOptions(
+  +        ttl:    7200,
+  +        prefix: 'app:idem:',
+  +        logger: $logger,
+  +    ),
+   );
+  
+  ```
+  Full migration steps in [`UPGRADING.md`](https://github.com/SanderMuller/php-x402/blob/main/UPGRADING.md#from-06x-to-070).
+  
+- **`PaymentEnforcer` returns 202 on `SettleResult::pending(...)` and skips the inner handler.** Only affects adopters whose `FacilitatorClient` returns a pending result; synchronous facilitators see the existing 2xx / 402 flow unchanged. Adopters wiring async settlement should add a `SettlePending` arm to any `match ($outcome->kind) { ... }` over `PaymentOutcomeKind` (or rely on the `default` arm the 0.6.0 notes recommended for forward-compat).
+  
+
+**Full Changelog**: https://github.com/SanderMuller/php-x402/compare/0.6.0...0.7.0
+
 ## 0.6.0 - 2026-05-10
 
 ### What's new
@@ -28,6 +97,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
       resourceFormatter: fn (string $url): string => $registry->formatResource($url),
   );
   
+  
   ```
   Three optional ctor closures: `onOutcome` (the listener), `captureContext` (no-arg, returns adopter-supplied context — request user id, IP, trace id — once per outcome), `resourceFormatter` (maps `challenge->resource ?? ''` to the canonical resource string surfaced on `PaymentOutcome::$resource`).
   
@@ -46,6 +116,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   // ['status' => 'settled', 'resource' => '...', 'payer' => '0x...', 'amount' => '10000', ...]
   
   Payment::query()->updateOrCreate(['transaction' => $row['transaction']], $row);
+  
   
   ```
   Constants: `STATUS_SETTLED`, `STATUS_REJECTED`, `DEFAULT_REASON_MAX_LENGTH = 255`. Reason truncation defaults to 255 chars (matches the migration column width) — without it, a long `*-error` reason exceeds the column and the audit-row write fails after the payment path already failed once. Pass `replayKey: $extracted` from the matched `ReplayKeyExtractor` for scheme-aware nonce / payer extraction; falls back to `PaymentSignature::authorization()` for the EIP-3009 path.
@@ -73,6 +144,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   PriceParser::toAtomic('0.0000019', 6, truncate: true);  // → '1' (drops the 9)
   
   
+  
   ```
   `PaymentRequiredBuilder` (test helper) passes `truncate: true` internally — fixture amounts like `'0.0123456789'` keep working there. Production callers reach for `PriceParser::toAtomic()` directly and get the strict defaults.
   
@@ -98,6 +170,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   
   
   
+  
   ```
   Ships ~70 default patterns (Agents / Assistants / Scrapers / Search crawlers / Undocumented) sourced from [https://knownagents.com](https://knownagents.com). Override the list with `patterns:`, extend it with `extra:`, or pass `patterns: []` to disable detection. Match is case-insensitive substring on the User-Agent.
   
@@ -114,6 +187,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   $fake->assertVerified();                              // any verify call
   $fake->assertSettled('https://example.test/premium'); // settle for a specific resource
   $fake->assertNothingSettled();                        // no-settle paths
+  
   
   
   
@@ -187,6 +261,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
       static fn (string $key, int $ttl): bool
           => (bool) $redis->set($key, '1', ['NX', 'EX' => $ttl]),
   );
+  
   
   
   
