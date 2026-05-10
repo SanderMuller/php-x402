@@ -107,6 +107,22 @@ $middleware = new PaymentEnforcer(
 
 Predicate returns `false` → inner handler runs, no challenge / no nonce claim / no facilitator hit. Default (`null`) = always enforce. Compose multiple policies downstream: `fn ($r) => $bot($r) && $geo($r) && $plan($r)`.
 
+`X402\Server\BotDetector` ships a curated list of AI agents / assistants / scrapers / search crawlers (~70 patterns from <https://knownagents.com>) for the bot-only-payment shape:
+
+```php
+use X402\Server\BotDetector;
+
+$detector = new BotDetector(extra: ['MyCustomCrawler']);
+
+$middleware = new PaymentEnforcer(
+    // ...
+    shouldEnforce: static fn (ServerRequestInterface $request): bool
+        => $detector->isBot($request->getHeaderLine('User-Agent')),
+);
+```
+
+Override the default list with `patterns:`, extend it with `extra:`, or pass `patterns: []` to disable detection. Match is case-insensitive substring on the User-Agent.
+
 ## Response-cache idempotency
 
 `PaymentResponseCache` is a separate PSR-15 middleware that sits **before** `PaymentEnforcer` in the chain. It caches paid 2xx responses keyed by `(network, from, nonce, signature bytes)` and replays the cached body on duplicates — closes the "paid but didn't receive content" gap when a client's connection drops between facilitator settle and response delivery.
