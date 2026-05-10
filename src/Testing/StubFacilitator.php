@@ -19,6 +19,15 @@ use X402\Protocol\PaymentSignature;
  *
  * Use `RecordingFacilitator` instead when a test needs to assert
  * call counts.
+ *
+ * @deprecated since 0.5.0; use `X402\Testing\FakeFacilitator` instead.
+ *             FakeFacilitator is a functional superset (configurable
+ *             outcomes via `rejectVerify()` / `failSettle()` mutators
+ *             plus full call recording plus PHPUnit assertion helpers).
+ *             A literal class-alias isn't possible — `StubFacilitator`
+ *             is `final readonly`, `FakeFacilitator` is mutable —
+ *             so this class stays unchanged through 0.5.x and is
+ *             removed in 0.6.0. Migrate by swapping the import.
  */
 final readonly class StubFacilitator implements FacilitatorClient
 {

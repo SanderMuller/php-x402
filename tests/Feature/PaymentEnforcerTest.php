@@ -19,8 +19,7 @@ use X402\Server\EnforcementPolicy;
 use X402\Server\PaymentEnforcer;
 use X402\Server\ResourceResolver;
 use X402\Server\StaticPriceTable;
-use X402\Testing\RecordingFacilitator;
-use X402\Testing\StubFacilitator;
+use X402\Testing\FakeFacilitator;
 
 final class OkHandler implements RequestHandlerInterface
 {
@@ -47,7 +46,7 @@ function buildEnforcer(?FacilitatorClient $facilitator = null, Version $version 
 
     return new PaymentEnforcer(
         priceTable: $priceTable,
-        facilitator: $facilitator ?? new StubFacilitator(),
+        facilitator: $facilitator ?? new FakeFacilitator(),
         nonceStore: new InMemoryNonceStore(),
         schemes: ['exact' => new ExactScheme()],
         responseFactory: $factory,
@@ -103,13 +102,13 @@ it('settles and returns the inner response with PAYMENT-RESPONSE on a valid paym
 });
 
 it('returns 402 when facilitator verify fails', function (): void {
-    $response = buildEnforcer(new StubFacilitator(verifyOk: false))->process(buildSignedRequest('X-PAYMENT'), new OkHandler());
+    $response = buildEnforcer((new FakeFacilitator())->rejectVerify())->process(buildSignedRequest('X-PAYMENT'), new OkHandler());
 
     expect($response->getStatusCode())->toBe(402);
 });
 
 it('returns 402 when facilitator settle fails', function (): void {
-    $response = buildEnforcer(new StubFacilitator(verifyOk: true, settleOk: false))->process(buildSignedRequest('X-PAYMENT'), new OkHandler());
+    $response = buildEnforcer((new FakeFacilitator())->failSettle())->process(buildSignedRequest('X-PAYMENT'), new OkHandler());
 
     expect($response->getStatusCode())->toBe(402);
 });
@@ -145,7 +144,7 @@ it('skips the entire pipeline when shouldEnforce returns false', function (): vo
     $priceTable = new StaticPriceTable();
     $priceTable->set('/premium', $challenge);
 
-    $facilitator = new RecordingFacilitator();
+    $facilitator = new FakeFacilitator();
     $nonceStore = new InMemoryNonceStore();
     $factory = new Psr17Factory();
 
@@ -167,8 +166,8 @@ it('skips the entire pipeline when shouldEnforce returns false', function (): vo
     expect($response->getStatusCode())->toBe(200)
         ->and((string) $response->getBody())->toBe('protected resource')
         ->and($response->hasHeader('X-PAYMENT-RESPONSE'))->toBeFalse()
-        ->and($facilitator->verifyCalls)->toBe(0)
-        ->and($facilitator->settleCalls)->toBe(0)
+        ->and($facilitator->verifyCalls())->toBe([])
+        ->and($facilitator->settleCalls())->toBe([])
         ->and($nonceStore->claim('eip155:8453', '0xfrom', '0xanynonce', 60))->toBeTrue();
 });
 
@@ -188,7 +187,7 @@ it('still enforces when shouldEnforce returns true', function (): void {
 
     $enforcer = new PaymentEnforcer(
         priceTable: $priceTable,
-        facilitator: new StubFacilitator(),
+        facilitator: new FakeFacilitator(),
         nonceStore: new InMemoryNonceStore(),
         schemes: ['exact' => new ExactScheme()],
         responseFactory: $factory,
@@ -206,7 +205,7 @@ it('propagates exceptions thrown by shouldEnforce', function (): void {
 
     $enforcer = new PaymentEnforcer(
         priceTable: new StaticPriceTable(),
-        facilitator: new StubFacilitator(),
+        facilitator: new FakeFacilitator(),
         nonceStore: new InMemoryNonceStore(),
         schemes: ['exact' => new ExactScheme()],
         responseFactory: $factory,
@@ -233,7 +232,7 @@ it('builds via PaymentEnforcer::forTesting() with in-process defaults', function
 
     $enforcer = PaymentEnforcer::forTesting(
         priceTable: $priceTable,
-        facilitator: new StubFacilitator(),
+        facilitator: new FakeFacilitator(),
         factory: new Psr17Factory(),
     );
 
@@ -264,7 +263,7 @@ it('still claims the nonce when challenge.extra.assetTransferMethod is non-strin
 
     $enforcer = new PaymentEnforcer(
         priceTable: $priceTable,
-        facilitator: new StubFacilitator(),
+        facilitator: new FakeFacilitator(),
         nonceStore: $store,
         schemes: ['exact' => new ExactScheme()],
         responseFactory: $factory,
@@ -321,7 +320,7 @@ it('reaches the facilitator on a valid upto-EVM payment without hitting the in-p
 
     $enforcer = new PaymentEnforcer(
         priceTable: $priceTable,
-        facilitator: new StubFacilitator(),
+        facilitator: new FakeFacilitator(),
         nonceStore: $store,
         schemes: ['upto' => $passthroughUpto],
         responseFactory: $factory,
@@ -384,7 +383,7 @@ it('does not claim on payload.authorization when the challenge declares a non-ei
 
     $enforcer = new PaymentEnforcer(
         priceTable: $priceTable,
-        facilitator: new StubFacilitator(),
+        facilitator: new FakeFacilitator(),
         nonceStore: $store,
         schemes: ['exact' => $passthroughScheme],
         responseFactory: $factory,
@@ -449,7 +448,7 @@ it('accepts a ResourceResolver instance and an EnforcementPolicy instance', func
     $factory = new Psr17Factory();
     $enforcer = new PaymentEnforcer(
         priceTable: $priceTable,
-        facilitator: new StubFacilitator(),
+        facilitator: new FakeFacilitator(),
         nonceStore: new InMemoryNonceStore(),
         schemes: ['exact' => new ExactScheme()],
         responseFactory: $factory,
@@ -494,7 +493,7 @@ it('does NOT claim nonces for custom non-RKE schemes — defers to facilitator (
 
     $factory = new Psr17Factory();
     $store = new InMemoryNonceStore();
-    $facilitator = new RecordingFacilitator();
+    $facilitator = new FakeFacilitator();
 
     // Custom scheme that does NOT implement ReplayKeyExtractor.
     // Validates the same EIP-3009 shape ExactScheme does.
@@ -539,8 +538,8 @@ it('does NOT claim nonces for custom non-RKE schemes — defers to facilitator (
     // (b) + (c) Both requests reached verify+settle (facilitator is
     // the only nonce-uniqueness check now for non-RKE schemes). If a
     // future change reintroduces an in-process gate, this fails.
-    expect($facilitator->verifyCalls)->toBe(2)
-        ->and($facilitator->settleCalls)->toBe(2)
+    expect($facilitator->verifyCalls())->toHaveCount(2)
+        ->and($facilitator->settleCalls())->toHaveCount(2)
         ->and($first->getStatusCode())->toBe(200)
         ->and($second->getStatusCode())->toBe(200);
 });

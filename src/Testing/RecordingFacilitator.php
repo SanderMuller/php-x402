@@ -20,6 +20,17 @@ use X402\Protocol\PaymentSignature;
  *
  * Always returns success. For rejection paths, use `StubFacilitator`
  * with the toggles flipped.
+ *
+ * @deprecated since 0.5.0; use `X402\Testing\FakeFacilitator` instead.
+ *             FakeFacilitator records full call payloads (signature +
+ *             challenge), exposes the count via `verifyCalls()` /
+ *             `settleCalls()`, AND lets tests assert via
+ *             `assertVerified()` / `assertSettled()` /
+ *             `assertNothingSettled()` PHPUnit helpers. This class
+ *             stays unchanged through 0.5.x and is removed in 0.6.0.
+ *             Migrate by swapping the import; `verifyCalls` /
+ *             `settleCalls` properties → `verifyCalls()` /
+ *             `settleCalls()` methods returning the recorded payloads.
  */
 final class RecordingFacilitator implements FacilitatorClient
 {
