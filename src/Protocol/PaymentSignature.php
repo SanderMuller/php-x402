@@ -101,6 +101,27 @@ final readonly class PaymentSignature
             );
         }
 
+        return self::fromArray($data);
+    }
+
+    /**
+     * Hydrate a PaymentSignature from an already-decoded envelope.
+     *
+     * Symmetric to `fromHeader()` but skips the base64 + JSON decode
+     * step. Designed for transports that decode the envelope earlier
+     * in the pipeline:
+     *
+     * - JSON-RPC / MCP consumers (`params._meta["x402/payment"]` is
+     *   already a PHP array by the time the method handler sees it).
+     * - A2A consumers (`metadata` decoded by the agent transport).
+     * - Custom test harnesses that build the envelope as an array.
+     *
+     * @param  array<string, mixed>  $data  v1 or v2 envelope; `x402Version` discriminates.
+     *
+     * @throws InvalidPaymentException When required fields are missing or wrong-typed.
+     */
+    public static function fromArray(array $data): self
+    {
         $version = self::resolveVersion($data);
 
         $accepted = null;

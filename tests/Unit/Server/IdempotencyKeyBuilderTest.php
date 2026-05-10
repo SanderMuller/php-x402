@@ -164,3 +164,38 @@ it('separates from-vs-bindingBytes spillover that a plain delimiter join would c
 
     expect($natural)->not->toBe($smuggled);
 });
+
+it('documents the recommended JSON-RPC consumer shape: [method, sha256(canonical_args)]', function (): void {
+    // laravel-x402-mcp's spec settles on a CacheScope value object that
+    // produces `[method, sha256(canonical_args)]` segments — the args
+    // hash uses sort-keys-recursive canonical-JSON encoding so
+    // client-side reserialisation can't split keys. This test pins
+    // the expected shape so a future API drift breaks loudly.
+
+    $canonicalArgs = static function (array $args): string {
+        ksort($args, SORT_STRING);
+
+        return hash('sha256', json_encode($args, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES));
+    };
+
+    $a = IdempotencyKeyBuilder::build(
+        network: 'eip155:8453',
+        from: '0xfrom',
+        nonce: '0xnonce',
+        bindingBytes: '0xeip3009-signature-bytes',
+        scope: ['tools/call', $canonicalArgs(['name' => 'fetch-premium-data', 'limit' => 10])],
+        prefix: 'x402:idem:mcp:',
+    );
+    $b = IdempotencyKeyBuilder::build(
+        network: 'eip155:8453',
+        from: '0xfrom',
+        nonce: '0xnonce',
+        bindingBytes: '0xeip3009-signature-bytes',
+        // Same args, keys reordered — canonical hash must collapse.
+        scope: ['tools/call', $canonicalArgs(['limit' => 10, 'name' => 'fetch-premium-data'])],
+        prefix: 'x402:idem:mcp:',
+    );
+
+    expect($a)->toBe($b)
+        ->and($a)->toStartWith('x402:idem:mcp:');
+});

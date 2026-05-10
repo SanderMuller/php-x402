@@ -12,15 +12,15 @@ use InvalidArgumentException;
  * Two consumers share this:
  *
  *   - `PaymentResponseCache` (PSR-15) — passes the raw `X-PAYMENT` header
- *     line as `bindingBytes`, leaves `scope` empty (the HTTP request URI
- *     is implicit in the header bytes).
+ *     line as `bindingBytes`, plus `[$method, $resolvedResource]` as
+ *     `scope` so paid responses don't replay across routes.
  *   - `laravel-x402-mcp` (JSON-RPC) — passes the EIP-3009 `signature`
  *     bytes as `bindingBytes` and `[method, challenge_resource]` as
- *     `scope` (e.g. `tools/call|mcp://tool/fetch-premium-data`). JSON
- *     re-encoding is non-canonical, so a JSON-RPC consumer cannot rely
- *     on the raw payload bytes; pinning to the signature gives the same
- *     forge-resistance because only the private-key holder can produce
- *     it.
+ *     `scope` (e.g. `tools/call`, `mcp://tool/fetch-premium-data`).
+ *     JSON re-encoding is non-canonical, so a JSON-RPC consumer cannot
+ *     rely on the raw payload bytes; pinning to the signature gives
+ *     the same forge-resistance because only the private-key holder
+ *     can produce it.
  *
  * Why both halves matter:
  *
@@ -33,6 +33,20 @@ use InvalidArgumentException;
  *   - `scope` prevents cross-transport / cross-primitive replay (e.g.
  *     a settled `tools/call` cache entry must not replay into a
  *     `resources/read` retry that reuses the same payment payload).
+ *
+ * Recommendations for downstream consumers:
+ *
+ *   - **Pre-derive scope segments via a transport-specific value
+ *     object** rather than building the list inline at the call site.
+ *     JSON-RPC consumers in particular should canonicalise the
+ *     resource fingerprint (e.g. `sha256` of sort-keys-recursive
+ *     canonical-JSON for `tools/call` argument bags) so client-side
+ *     re-serialisation can't split keys across cache entries.
+ *   - **Set an explicit transport-namespaced `prefix`** in your
+ *     adapter wiring (e.g. `x402:idem:mcp:`, `x402:idem:http:`) so
+ *     PSR-15 and JSON-RPC consumers sharing one Redis store cannot
+ *     collide. The `DEFAULT_PREFIX` is `x402:idem:` — fine for
+ *     single-transport deployments, recipe for footgun in mixed.
  */
 final readonly class IdempotencyKeyBuilder
 {

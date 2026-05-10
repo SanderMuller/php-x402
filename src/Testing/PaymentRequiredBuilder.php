@@ -4,9 +4,9 @@ declare(strict_types=1);
 
 namespace X402\Testing;
 
-use InvalidArgumentException;
 use X402\Protocol\PaymentRequired;
 use X402\Schemes\Evm\ExactScheme;
+use X402\Support\PriceParser;
 
 /**
  * Fluent builder for `PaymentRequired` test fixtures. Saves test code
@@ -156,58 +156,12 @@ final class PaymentRequiredBuilder
 
     /**
      * Convert a human-readable amount (e.g. 0.01 USDC) to an atomic
-     * unit string (e.g. "10000" for 6 decimals). Accepts either a
-     * float or a numeric string; strings let callers preserve precision
-     * past float-rounding errors.
-     *
-     * Uses bcmath when available; otherwise falls back to a pure-string
-     * decimal shift. The previous float+round() fallback silently
-     * overflowed and lost precision for 18-decimal ERC-20 fixtures —
-     * the new path is exact at any decimal count.
+     * unit string. Delegates to `X402\Support\PriceParser` so adapters
+     * that want the same conversion outside the builder don't reinvent
+     * it.
      */
     private static function toAtomicUnits(float|string $amount, int $decimals): string
     {
-        $human = is_string($amount) ? $amount : sprintf('%.' . $decimals . 'F', $amount);
-
-        if (! is_numeric($human)) {
-            throw new InvalidArgumentException(sprintf('Amount must be numeric, got "%s".', $human));
-        }
-
-        if (function_exists('bcmul')) {
-            return bcmul($human, (string) (10 ** $decimals), 0);
-        }
-
-        return self::shiftDecimalPoint($human, $decimals);
-    }
-
-    /**
-     * Pure-string decimal shift — no float math involved, exact at any
-     * decimal count. Parses the already-is_numeric'd input as
-     * `[-+]?\d*(\.\d*)?[eE][+-]?\d+?` (we exclude the exponent form by
-     * having normalized via sprintf upstream for floats), combines int
-     * + fractional parts, and pads/truncates to `$decimals` places.
-     * Truncation is strict (no rounding) so atomic conversions don't
-     * silently bump cents.
-     */
-    private static function shiftDecimalPoint(string $human, int $decimals): string
-    {
-        $negative = str_starts_with($human, '-');
-
-        if ($negative || str_starts_with($human, '+')) {
-            $human = substr($human, 1);
-        }
-
-        [$intPart, $fracPart] = str_contains($human, '.') ? explode('.', $human, 2) : [$human, ''];
-
-        if (strlen($fracPart) > $decimals) {
-            $fracPart = substr($fracPart, 0, $decimals);
-        } else {
-            $fracPart = str_pad($fracPart, $decimals, '0', STR_PAD_RIGHT);
-        }
-
-        $combined = ltrim($intPart . $fracPart, '0');
-        $result = $combined === '' ? '0' : $combined;
-
-        return $negative && $result !== '0' ? '-' . $result : $result;
+        return PriceParser::toAtomic($amount, $decimals);
     }
 }
