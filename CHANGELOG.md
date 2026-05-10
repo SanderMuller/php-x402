@@ -5,6 +5,31 @@ All notable changes to `php-x402` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.5.1 - 2026-05-10
+
+### Bug fixes
+
+- **`X402\Support\PriceParser` rejects negative amounts, decimal-overflow, and non-strict-shape inputs by default.** Surfaced from a downstream adapter cutover that pinned three silent-conversion vectors:
+  
+  1. **Negative amounts** used to produce a negative atomic string (`'-0.5'` → `'-500000'`). The wire format accepts it; adopters notice on the facilitator side, or never. Now throws by default.
+  2. **More fractional digits than the asset supports** used to silently truncate (`'0.0001'` with `decimals=2` → `'0'`). A buyer signing this authorization gets debited for zero atomic units while the seller serves the request. Now throws by default.
+  3. **`is_numeric()` shape** used to accept scientific notation (`'1e5'` silently accelerates to 100000), thousands separators (`'1,000'`), leading `+`, hex/oct prefixes, and whitespace. Now uses strict regex `^-?\d+(\.\d+)?$` and rejects the lot.
+  
+  Opt into the looser behaviour explicitly when you have a deliberate reason:
+  
+  ```php
+  // Refund / credit math
+  PriceParser::toAtomic('-0.5', 6, allowNegative: true);  // → '-500000'
+  
+  // "Round to the nearest cent" pricing
+  PriceParser::toAtomic('0.0000019', 6, truncate: true);  // → '1' (drops the 9)
+  
+  ```
+  `PaymentRequiredBuilder` (test helper) passes `truncate: true` internally — fixture amounts like `'0.0123456789'` keep working there. Production callers reach for `PriceParser::toAtomic()` directly and get the strict defaults.
+  
+
+**Full Changelog**: https://github.com/SanderMuller/php-x402/compare/0.5.0...0.5.1
+
 ## 0.5.0 - 2026-05-10
 
 ### What's new
@@ -22,6 +47,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
           => $detector->isBot($request->getHeaderLine('User-Agent')),
   );
   
+  
   ```
   Ships ~70 default patterns (Agents / Assistants / Scrapers / Search crawlers / Undocumented) sourced from [https://knownagents.com](https://knownagents.com). Override the list with `patterns:`, extend it with `extra:`, or pass `patterns: []` to disable detection. Match is case-insensitive substring on the User-Agent.
   
@@ -38,6 +64,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   $fake->assertVerified();                              // any verify call
   $fake->assertSettled('https://example.test/premium'); // settle for a specific resource
   $fake->assertNothingSettled();                        // no-settle paths
+  
   
   ```
   Records full signature + challenge payload per call (not just counts) — accessible via `verifyCalls()` / `settleCalls()` for custom assertions. The `assert*()` helpers use `PHPUnit\Framework\Assert`; php-x402 already pulls phpunit transitively via `pestphp/pest` in dev, so this is available wherever you run a Pest or PHPUnit suite.
@@ -109,6 +136,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
       static fn (string $key, int $ttl): bool
           => (bool) $redis->set($key, '1', ['NX', 'EX' => $ttl]),
   );
+  
   
   
   
