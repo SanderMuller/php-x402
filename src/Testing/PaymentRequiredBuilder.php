@@ -159,9 +159,15 @@ final class PaymentRequiredBuilder
      * unit string. Delegates to `X402\Support\PriceParser` so adapters
      * that want the same conversion outside the builder don't reinvent
      * it.
+     *
+     * Builder semantics intentionally pass `truncate: true` — test
+     * fixtures often use messy decimals (`'0.0123456789'`) and the
+     * builder's job is to make tests easy, not enforce production
+     * protocol-correctness. Production callers reach for
+     * `PriceParser::toAtomic()` directly and get the strict defaults.
      */
     private static function toAtomicUnits(float|string $amount, int $decimals): string
     {
-        return PriceParser::toAtomic($amount, $decimals);
+        return PriceParser::toAtomic($amount, $decimals, truncate: true);
     }
 }
