@@ -7,6 +7,7 @@ namespace X402\Schemes\Evm;
 use InvalidArgumentException;
 use kornrunner\Keccak;
 use RuntimeException;
+use X402\Support\Hex;
 
 /**
  * EIP-712 typed-data hashing for EIP-3009 transferWithAuthorization.
@@ -94,7 +95,7 @@ final class Eip712Hasher
         $hex = dechex($value);
         $hex = str_pad($hex, 64, '0', STR_PAD_LEFT);
 
-        return $this->hex2binStrict($hex);
+        return Hex::toBinary($hex);
     }
 
     /**
@@ -114,7 +115,7 @@ final class Eip712Hasher
         $hex = gmp_strval(gmp_init($trimmed, 10), 16);
         $hex = str_pad($hex, 64, '0', STR_PAD_LEFT);
 
-        return $this->hex2binStrict($hex);
+        return Hex::toBinary($hex);
     }
 
     private function encodeBytes32(string $value): string
@@ -125,17 +126,6 @@ final class Eip712Hasher
             throw new InvalidArgumentException(sprintf('bytes32 must be 32 bytes hex-encoded, got "%s".', $value));
         }
 
-        return $this->hex2binStrict($hex);
-    }
-
-    private function hex2binStrict(string $hex): string
-    {
-        $bin = hex2bin($hex);
-
-        if ($bin === false) {
-            throw new InvalidArgumentException(sprintf('Invalid hex input: "%s".', $hex));
-        }
-
-        return $bin;
+        return Hex::toBinary($hex);
     }
 }

@@ -6,6 +6,7 @@ namespace X402\Schemes\Evm;
 
 use InvalidArgumentException;
 use kornrunner\Keccak;
+use X402\Support\Hex;
 
 /**
  * Client-side helper for producing **ERC-6492 wrapped** signatures.
@@ -89,8 +90,8 @@ final readonly class SmartWalletSigner
             throw new InvalidArgumentException('salt must be a 32-byte value.');
         }
 
-        $initCodeHash = Keccak::hash($this->hex2binStrict($initCodeHex), 256);
-        $packed = $this->hex2binStrict('ff' . $deployerHex . $saltHex . $initCodeHash);
+        $initCodeHash = Keccak::hash(Hex::toBinary($initCodeHex), 256);
+        $packed = Hex::toBinary('ff' . $deployerHex . $saltHex . $initCodeHash);
 
         return '0x' . substr(Keccak::hash($packed, 256), 24);
     }
@@ -138,16 +139,5 @@ final readonly class SmartWalletSigner
     private function stripPrefix(string $hex): string
     {
         return strtolower(str_starts_with($hex, '0x') ? substr($hex, 2) : $hex);
-    }
-
-    private function hex2binStrict(string $hex): string
-    {
-        $bin = hex2bin($hex);
-
-        if ($bin === false) {
-            throw new InvalidArgumentException(sprintf('Invalid hex: "%s".', $hex));
-        }
-
-        return $bin;
     }
 }

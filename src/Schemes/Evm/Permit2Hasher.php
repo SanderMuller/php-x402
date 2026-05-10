@@ -7,6 +7,7 @@ namespace X402\Schemes\Evm;
 use InvalidArgumentException;
 use kornrunner\Keccak;
 use RuntimeException;
+use X402\Support\Hex;
 
 /**
  * EIP-712 typed-data hashing for Permit2 `permitWitnessTransferFrom`.
@@ -51,8 +52,8 @@ final class Permit2Hasher
             256,
         );
 
-        $encoded = $this->hex2binStrict(substr($typeHash, 2))
-            . $this->hex2binStrict(substr('0x' . Keccak::hash('Permit2', 256), 2))
+        $encoded = Hex::toBinary(substr($typeHash, 2))
+            . Hex::toBinary(substr('0x' . Keccak::hash('Permit2', 256), 2))
             . $this->encodeUint256($chainId)
             . $this->encodeAddress(Constants::PERMIT2_CONTRACT);
 
@@ -78,12 +79,12 @@ final class Permit2Hasher
             256,
         );
 
-        $encoded = $this->hex2binStrict(substr($typeHash, 2))
-            . $this->hex2binStrict(substr($this->hashTokenPermissions($permitted), 2))
+        $encoded = Hex::toBinary(substr($typeHash, 2))
+            . Hex::toBinary(substr($this->hashTokenPermissions($permitted), 2))
             . $this->encodeAddress($permit['spender'])
             . $this->encodeUint256String($permit['nonce'])
             . $this->encodeUint256String($permit['deadline'])
-            . $this->hex2binStrict(substr($this->hashWitness($witness), 2));
+            . Hex::toBinary(substr($this->hashWitness($witness), 2));
 
         return '0x' . Keccak::hash($encoded, 256);
     }
@@ -95,7 +96,7 @@ final class Permit2Hasher
     {
         $typeHash = '0x' . Keccak::hash('TokenPermissions(address token,uint256 amount)', 256);
 
-        $encoded = $this->hex2binStrict(substr($typeHash, 2))
+        $encoded = Hex::toBinary(substr($typeHash, 2))
             . $this->encodeAddress($permitted['token'])
             . $this->encodeUint256String($permitted['amount']);
 
@@ -109,7 +110,7 @@ final class Permit2Hasher
     {
         $typeHash = '0x' . Keccak::hash('Witness(address to,uint256 validAfter)', 256);
 
-        $encoded = $this->hex2binStrict(substr($typeHash, 2))
+        $encoded = Hex::toBinary(substr($typeHash, 2))
             . $this->encodeAddress($witness['to'])
             . $this->encodeUint256String($witness['validAfter']);
 
@@ -124,7 +125,7 @@ final class Permit2Hasher
             throw new InvalidArgumentException(sprintf('Invalid EVM address: "%s".', $address));
         }
 
-        return str_repeat("\x00", 12) . $this->hex2binStrict($hex);
+        return str_repeat("\x00", 12) . Hex::toBinary($hex);
     }
 
     private function encodeUint256(int $value): string
@@ -136,7 +137,7 @@ final class Permit2Hasher
         $hex = dechex($value);
         $hex = str_pad($hex, 64, '0', STR_PAD_LEFT);
 
-        return $this->hex2binStrict($hex);
+        return Hex::toBinary($hex);
     }
 
     private function encodeUint256String(string $value): string
@@ -153,17 +154,6 @@ final class Permit2Hasher
         $hex = gmp_strval(gmp_init($trimmed, 10), 16);
         $hex = str_pad($hex, 64, '0', STR_PAD_LEFT);
 
-        return $this->hex2binStrict($hex);
-    }
-
-    private function hex2binStrict(string $hex): string
-    {
-        $bin = hex2bin($hex);
-
-        if ($bin === false) {
-            throw new InvalidArgumentException(sprintf('Invalid hex input: "%s".', $hex));
-        }
-
-        return $bin;
+        return Hex::toBinary($hex);
     }
 }
