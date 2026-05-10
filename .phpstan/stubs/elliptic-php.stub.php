@@ -11,9 +11,56 @@ namespace BN;
 
 class BN
 {
-    public function toString(int|string $base = 10, int $padding = 0): string
+    /**
+     * @param  int|string|\BN\BN  $val
+     * @param  int|string  $base
+     * @param  string  $endian
+     */
+    public function __construct($val = 0, $base = 10, $endian = 'be') {}
+
+    /**
+     * @param  int|string  $base
+     * @param  int  $padding
+     * @return string
+     */
+    public function toString($base = 10, $padding = 0)
     {
         return '';
+    }
+
+    /**
+     * @param  \BN\BN  $num
+     * @return \BN\BN
+     */
+    public function add($num)
+    {
+        return new \BN\BN;
+    }
+
+    /**
+     * @param  \BN\BN  $num
+     * @return \BN\BN
+     */
+    public function mod($num)
+    {
+        return new \BN\BN;
+    }
+
+    /**
+     * @return bool
+     */
+    public function isZero()
+    {
+        return false;
+    }
+
+    /**
+     * @param  \BN\BN  $num
+     * @return bool
+     */
+    public function gte($num)
+    {
+        return false;
     }
 }
 
