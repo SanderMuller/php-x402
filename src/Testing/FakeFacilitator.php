@@ -75,6 +75,20 @@ final class FakeFacilitator implements FacilitatorClient
     private array $settleCalls = [];
 
     /**
+     * Indexed in lockstep with $verifyCalls.
+     *
+     * @var list<VerifyResult>
+     */
+    private array $verifyResults = [];
+
+    /**
+     * Indexed in lockstep with $settleCalls.
+     *
+     * @var list<SettleResult>
+     */
+    private array $settleResults = [];
+
+    /**
      * @return list<array{signature: PaymentSignature, challenge: PaymentRequired}>
      */
     public function verifyCalls(): array
@@ -88,6 +102,22 @@ final class FakeFacilitator implements FacilitatorClient
     public function settleCalls(): array
     {
         return $this->settleCalls;
+    }
+
+    /**
+     * @return list<VerifyResult>
+     */
+    public function verifyResults(): array
+    {
+        return $this->verifyResults;
+    }
+
+    /**
+     * @return list<SettleResult>
+     */
+    public function settleResults(): array
+    {
+        return $this->settleResults;
     }
 
     public function rejectVerify(string $reason = 'rejected'): self
@@ -110,24 +140,32 @@ final class FakeFacilitator implements FacilitatorClient
     {
         $this->verifyCalls[] = ['signature' => $signature, 'challenge' => $challenge];
 
-        return new VerifyResult(
+        $result = new VerifyResult(
             isValid: $this->verifyOk,
             invalidReason: $this->verifyOk ? null : ($this->verifyReason ?? 'rejected'),
             payer: $this->payer,
         );
+
+        $this->verifyResults[] = $result;
+
+        return $result;
     }
 
     public function settle(PaymentSignature $signature, PaymentRequired $challenge): SettleResult
     {
         $this->settleCalls[] = ['signature' => $signature, 'challenge' => $challenge];
 
-        return new SettleResult(
+        $result = new SettleResult(
             success: $this->settleOk,
             transaction: $this->settleOk ? $this->transaction : '',
             network: $challenge->network,
             payer: $this->payer,
             errorReason: $this->settleOk ? null : ($this->settleReason ?? 'settlement-failed'),
         );
+
+        $this->settleResults[] = $result;
+
+        return $result;
     }
 
     public function supported(): SupportedKinds

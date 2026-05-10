@@ -147,6 +147,73 @@ it('honours configurable payer + transaction defaults', function (): void {
         ->and($settle->transaction)->toBe('0xCustomTxHash');
 });
 
+it('starts with empty recording arrays before any call', function (): void {
+    $fake = new FakeFacilitator();
+
+    expect($fake->verifyResults())->toBe([])
+        ->and($fake->settleResults())->toBe([]);
+});
+
+it('records the VerifyResult instance returned from each verify() call', function (): void {
+    $fake = new FakeFacilitator();
+    $sig = fakeSignature();
+    $chA = fakeChallenge('https://example.test/A');
+    $chB = fakeChallenge('https://example.test/B');
+    $chC = fakeChallenge('https://example.test/C');
+
+    $first = $fake->verify($sig, $chA);
+    $fake->rejectVerify('bad-nonce');
+    $second = $fake->verify($sig, $chB);
+    $fake->verifyOk = true;
+    $fake->verifyReason = null;
+
+    $third = $fake->verify($sig, $chC);
+
+    expect($fake->verifyResults())->toHaveCount(3)
+        ->and($fake->verifyResults()[0])->toBe($first)
+        ->and($fake->verifyResults()[1])->toBe($second)
+        ->and($fake->verifyResults()[2])->toBe($third)
+        ->and($fake->verifyResults()[0]->isValid)->toBeTrue()
+        ->and($fake->verifyResults()[1]->isValid)->toBeFalse()
+        ->and($fake->verifyResults()[1]->invalidReason)->toBe('bad-nonce')
+        ->and($fake->verifyResults()[2]->isValid)->toBeTrue()
+        ->and($fake->verifyCalls())->toHaveCount(3)
+        ->and($fake->verifyCalls()[0]['challenge']->resource)->toBe('https://example.test/A')
+        ->and($fake->verifyCalls()[1]['challenge']->resource)->toBe('https://example.test/B')
+        ->and($fake->verifyCalls()[2]['challenge']->resource)->toBe('https://example.test/C');
+});
+
+it('records the SettleResult instance returned from each settle() call', function (): void {
+    $fake = new FakeFacilitator();
+    $sig = fakeSignature();
+    $chA = fakeChallenge('https://example.test/A');
+    $chB = fakeChallenge('https://example.test/B');
+
+    $first = $fake->settle($sig, $chA);
+    $fake->failSettle('on-chain-revert');
+    $second = $fake->settle($sig, $chB);
+
+    expect($fake->settleResults())->toHaveCount(2)
+        ->and($fake->settleResults()[0])->toBe($first)
+        ->and($fake->settleResults()[1])->toBe($second)
+        ->and($fake->settleResults()[0]->success)->toBeTrue()
+        ->and($fake->settleResults()[1]->success)->toBeFalse()
+        ->and($fake->settleResults()[1]->errorReason)->toBe('on-chain-revert')
+        ->and($fake->settleCalls())->toHaveCount(2)
+        ->and($fake->settleCalls()[0]['challenge']->resource)->toBe('https://example.test/A')
+        ->and($fake->settleCalls()[1]['challenge']->resource)->toBe('https://example.test/B');
+});
+
+it('records the same instance that was returned (no clone)', function (): void {
+    $fake = new FakeFacilitator();
+
+    $verify = $fake->verify(fakeSignature(), fakeChallenge());
+    $settle = $fake->settle(fakeSignature(), fakeChallenge());
+
+    expect($fake->verifyResults()[0])->toBe($verify)
+        ->and($fake->settleResults()[0])->toBe($settle);
+});
+
 it('returns empty supported() and discoverResources() pages', function (): void {
     $fake = new FakeFacilitator();
 
