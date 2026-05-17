@@ -22,7 +22,7 @@
         }
     ],
     "require": {
-        "php": "^8.2",
+        "php": "^8.3",
         "psr/http-message": "^1.1 || ^2.0",
         "psr/http-server-middleware": "^1.0",
         "psr/http-server-handler": "^1.0",
@@ -91,10 +91,12 @@
         "test": "vendor/bin/pest",
         "test-coverage": "vendor/bin/pest --coverage",
         "lean": "vendor/bin/lean-package-validator validate --validate-git-archive --keep-license --keep-readme",
+        "validate-gitattributes": "vendor/bin/lean-package-validator validate",
         "qa": [
             "@rector",
             "@format",
-            "@phpstan-simplified"
+            "@phpstan-simplified",
+            "@validate-gitattributes"
         ],
         "ci": [
             "@rector-check",
@@ -102,6 +104,9 @@
             "@phpstan",
             "@test",
             "@lean"
+        ],
+        "post-install-cmd": [
+            "if [ \"$COMPOSER_DEV_MODE\" = \"1\" ]; then vendor/bin/testbench package-boost:sync 2>/dev/null || true; fi"
         ],
         "post-autoload-dump": [
             "@clear",
