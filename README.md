@@ -1,5 +1,10 @@
 # php-x402
 
+[![Latest Version on Packagist](https://img.shields.io/packagist/v/sandermuller/php-x402.svg?style=flat-square)](https://packagist.org/packages/sandermuller/php-x402)
+[![GitHub Tests Action Status](https://img.shields.io/github/actions/workflow/status/sandermuller/php-x402/run-tests.yml?branch=main&label=tests&style=flat-square)](https://github.com/sandermuller/php-x402/actions/workflows/run-tests.yml)
+[![Total Downloads](https://img.shields.io/packagist/dt/sandermuller/php-x402.svg?style=flat-square)](https://packagist.org/packages/sandermuller/php-x402)
+[![License](https://img.shields.io/packagist/l/sandermuller/php-x402.svg?style=flat-square)](LICENSE)
+
 Framework-agnostic PHP implementation of the [x402 payment protocol](https://www.x402.org/).
 
 HTTP 402 stablecoin settlement. Pay-per-request APIs without subscriptions, API keys, or fiat rails. EIP-3009 `transferWithAuthorization` on EVM chains via the Coinbase facilitator (or any compatible facilitator).
