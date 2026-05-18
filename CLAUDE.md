@@ -24,7 +24,7 @@ If you find yourself reaching for an `Illuminate\*` class from `src/`, you are i
 ## Testing
 
 - Test runner: `vendor/bin/pest` (Pest 3+).
-- Test suites: `Unit`, `Feature`, `Arch` — wired in `phpunit.xml.dist`.
+- Test suites: `Unit`, `Feature`, `Arch` — wired in `phpunit.xml`.
 - Conformance vectors live in `tests/Fixtures/eip712-vectors.json`. Inputs match the official Coinbase Go test suite (`go/test/unit/evm_eip712_test.go`) so a hash deviation here is a deviation from the upstream spec.
 
 ## Quality bar
